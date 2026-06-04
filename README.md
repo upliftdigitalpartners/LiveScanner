@@ -1,0 +1,152 @@
+# Live Scanner
+
+Stream live **air-traffic control** (LiveATC.net) and **emergency/scanner** feeds (Broadcastify)
+on your Android phone — and in the car via **Android Auto**. Pure curiosity fuel: eavesdrop on
+the tower while you drive past the airport, or tune the local PD on a road trip.
+
+> Built to be **sideloaded** (developer mode) — no Play Store submission required.
+> Native Kotlin + Jetpack Compose + Media3. iOS/CarPlay may come later.
+
+---
+
+## What it does
+
+- **Air Traffic** — 50+ major US airport tower/approach feeds from LiveATC.net, free, no account.
+- **Scanner** — add Broadcastify police/fire/EMS feeds by ID, or any direct stream URL.
+- **Nearby** — sorts feeds by distance to your location (great on a road trip).
+- **Favorites**, **search**, background playback, lock-screen controls.
+- **Android Auto** — the same feed tree shows up in the car; tap to listen.
+- **Live radar** — listening to an airport? Tap **Radar** to watch live aircraft on a hand-drawn phosphor scope (ADS-B via [adsb.lol](https://adsb.lol/), free, no key): plane-silhouette glyphs by type, fading trails, range zoom, color skins, and tap any plane for details + a real photo of it ([planespotters](https://www.planespotters.net/)).
+- **AI layer** — toggle live **captions** (Groq Whisper), **plain-English** decoding, and **auto-follow** that spotlights the exact plane being talked to. Bring your own free [Groq](https://console.groq.com) key. Experimental.
+
+## How it’s built
+
+The whole app is organized around **Media3’s `MediaLibraryService`** — one playback engine that
+serves three faces at once:
+
+```
+ScannerPlaybackService (MediaLibraryService)
+ ├─ ExoPlayer .................. streams MP3/AAC (ICY/Shoutcast) over HTTP(S)
+ ├─ MediaLibrarySession ........ browsable tree: Nearby / Air Traffic / Scanner / Favorites / All
+ │     ├─ phone UI ............. MediaController + Jetpack Compose
+ │     ├─ lock screen / notif .. automatic media notification
+ │     └─ Android Auto ......... renders its own UI from the same tree
+ └─ FeedRepository ............. bundled catalog (assets/feeds.json) + your custom feeds
+```
+
+- **LiveATC** plays from `https://d.liveatc.net/<ident>` (302-redirects to a stream node; HTTPS, no auth).
+- **Broadcastify** resolves to `https://audio.broadcastify.com/<id>.mp3`. That endpoint needs a
+  **Premium** account — credentials (Settings) are injected as a basic-auth header only for
+  `broadcastify.com` hosts. Without Premium, Broadcastify feeds are best-effort; LiveATC is the
+  reliable core.
+
+---
+
+## Build & run
+
+You need **Android Studio** (it bundles the right JDK + Gradle + SDK). This project targets
+`compileSdk 35` / `minSdk 26`.
+
+### Option A — Android Studio (recommended)
+1. **Open** `~/Repo/LiveScanner` in Android Studio. Let it sync Gradle.
+2. Plug in your phone (USB debugging on) or start an emulator.
+3. Press **Run ▶** (the `app` config).
+
+### Option B — Command line
+The system Java is too old for Gradle, so point `JAVA_HOME` at Android Studio’s bundled JDK:
+
+```bash
+cd ~/Repo/LiveScanner
+export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
+
+./gradlew :app:assembleDebug          # builds app/build/outputs/apk/debug/app-debug.apk
+./gradlew :app:installDebug           # build + install to the connected device
+```
+
+### Sideload the APK to a phone
+```bash
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+```
+Or copy the `.apk` to the phone and open it (enable “Install unknown apps” for your file manager).
+
+### Share it with friends (signed release)
+To share — and let friends install **updates** over old versions — build the **release** APK, which is
+signed with a stable key. The key lives in a **gitignored** `keystore/livescanner-release.jks`, with its
+passwords in a **gitignored** `keystore.properties`. If both are present, `assembleRelease` signs
+automatically; if they're missing (e.g. a fresh clone) the release build still succeeds but stays unsigned.
+
+Re-create the key if needed, then build:
+```bash
+export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
+# (only if keystore/ is missing)
+"$JAVA_HOME/bin/keytool" -genkeypair -v -keystore keystore/livescanner-release.jks \
+  -storetype PKCS12 -keyalg RSA -keysize 2048 -validity 10000 -alias livescanner \
+  -dname "CN=Live Scanner, O=Personal, C=US"
+#   ...then write keystore.properties with storeFile/storePassword/keyAlias/keyPassword
+
+./gradlew :app:assembleRelease   # -> app/build/outputs/apk/release/app-release.apk (signed)
+```
+Send friends that `app-release.apk` (Google Drive/Dropbox link, Telegram, or a GitHub Release — not
+AirDrop) along with **[INSTALL.md](INSTALL.md)**. **Back up `keystore/` + `keystore.properties`** — lose
+the key and you can't publish updates that install over the old app.
+
+---
+
+## Android Auto (sideloaded apps)
+
+Android Auto **won’t show a non-Play-Store media app until you allow unknown sources**. One-time setup
+on the phone:
+
+1. Make sure **Android Auto** is installed/updated.
+2. Open its settings: **Settings → Apps → Android Auto → (open the app’s additional settings)**.
+3. Scroll to **“Version”** and tap it ~**10 times** to unlock **Developer mode**.
+4. Open the **⋮ menu → Developer settings** and enable **“Unknown sources.”**
+5. Back in Android Auto settings, open **“Customize launcher”** and tick **Live Scanner**.
+
+> Menu wording shifts between Android Auto versions, but the toggle is always **Developer settings →
+> Unknown sources**.
+
+### Test it without a car — Desktop Head Unit (DHU)
+1. In **Android Studio → SDK Manager → SDK Tools**, install **“Android Auto Desktop Head Unit emulator.”**
+2. In Android Auto **Developer settings**, enable **“Start head unit server.”**
+3. Connect the phone by USB and run:
+   ```bash
+   ~/Library/Android/sdk/extras/google/auto/desktop-head-unit
+   ```
+4. The DHU window opens; pick **Live Scanner** from the media apps. Or just plug into a car that has
+   Android Auto.
+
+---
+
+## Feeds
+
+### Bundled (LiveATC)
+`app/src/main/assets/feeds.json` ships 50+ verified airport feeds. To **add or refresh** them, use the
+helper that probes LiveATC for working stream idents:
+
+```bash
+bash tools/probe_liveatc.sh        # writes /tmp/liveatc_feeds.json (edit the airport list inside)
+```
+Idents drift over time. To check/find one manually, a feed’s playlist lives at
+`https://www.liveatc.net/play/<ident>.pls` — the `File1=` line is the stream URL.
+
+### Add your own (in-app)
+Tap **＋ Add feed**:
+- **Direct URL** — paste any `http(s)` MP3/AAC stream (a custom Icecast feed, a police dept stream, etc.).
+- **Broadcastify ID** — the number from `broadcastify.com/listen/feed/<ID>`. For reliable audio, add
+  your **Broadcastify Premium** username/password under **Settings**.
+
+---
+
+## Legal / fair use
+
+This is a **personal-use** listener, not a redistribution service. Respect
+[LiveATC](https://www.liveatc.net/) and [Broadcastify](https://www.broadcastify.com/) Terms of Service
+— don’t rebroadcast their streams or use them commercially. Listening to ATC is legal in the US; **mobile
+use of police scanners is restricted in some states/countries** — know your local laws before using
+scanner feeds in a vehicle.
+
+## Roadmap
+- **TTS decode** — speak the plain-English aloud for the car; spoken-callsign tuning; a jargon glossary.
+- Radar: optional map underlay, altitude filters, pinch-zoom, weather overlay.
+- Sleep timer, recent history; iOS + CarPlay (separate native target — catalog + ADS-B layers are portable).
