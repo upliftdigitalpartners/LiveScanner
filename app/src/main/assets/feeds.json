@@ -98,6 +98,30 @@
       "description": "Charlotte Douglas Intl — Tower"
     },
     {
+      "id": "liveatc:kclt1",
+      "name": "Charlotte Del/Gnd/Twr",
+      "source": "LIVEATC",
+      "type": "ATC",
+      "streamUrl": "https://d.liveatc.net/kclt1",
+      "location": "Charlotte, NC",
+      "region": "United States",
+      "lat": 35.214,
+      "lon": -80.9431,
+      "description": "Charlotte Douglas Intl — Delivery/Ground/Tower"
+    },
+    {
+      "id": "liveatc:kclt2",
+      "name": "Charlotte Approach",
+      "source": "LIVEATC",
+      "type": "ATC",
+      "streamUrl": "https://d.liveatc.net/kclt2",
+      "location": "Charlotte, NC",
+      "region": "United States",
+      "lat": 35.214,
+      "lon": -80.9431,
+      "description": "Charlotte Douglas Intl — Approach/Departure"
+    },
+    {
       "id": "liveatc:kcle",
       "name": "Cleveland ATC",
       "source": "LIVEATC",
