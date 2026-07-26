@@ -59,7 +59,19 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         override fun onEvents(player: Player, events: Player.Events) = pushState()
 
         override fun onPlayerError(error: PlaybackException) {
-            lastError = error.localizedMessage ?: "Couldn't play this feed"
+            lastError = when (error.errorCode) {
+                // LiveATC/Broadcastify return 404 when a feed's source is offline.
+                PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS,
+                PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND,
+                -> "Feed offline — the source isn't broadcasting right now"
+                PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED,
+                PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT,
+                -> "No connection — check your internet"
+                PlaybackException.ERROR_CODE_PARSING_CONTAINER_MALFORMED,
+                PlaybackException.ERROR_CODE_IO_INVALID_HTTP_CONTENT_TYPE,
+                -> "Stream problem — this feed may have moved"
+                else -> error.localizedMessage ?: "Couldn't play this feed"
+            }
             pushState()
         }
 
