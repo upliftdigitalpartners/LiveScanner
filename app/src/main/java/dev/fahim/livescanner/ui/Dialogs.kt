@@ -6,7 +6,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -24,6 +23,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.fahim.livescanner.data.Feed
 import dev.fahim.livescanner.data.FeedSource
 import dev.fahim.livescanner.data.FeedType
+import dev.fahim.livescanner.ui.theme.FlightDeck
 import java.util.UUID
 
 private enum class AddMode { URL, BROADCASTIFY }
@@ -46,20 +46,17 @@ fun AddFeedDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
+        containerColor = FlightDeck.panel,
+        titleContentColor = FlightDeck.textHi,
+        textContentColor = FlightDeck.text,
         title = { Text("Add a feed") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FilterChip(
-                        selected = mode == AddMode.URL,
-                        onClick = { mode = AddMode.URL },
-                        label = { Text("Direct URL") },
-                    )
-                    FilterChip(
-                        selected = mode == AddMode.BROADCASTIFY,
-                        onClick = { mode = AddMode.BROADCASTIFY },
-                        label = { Text("Broadcastify ID") },
-                    )
+                    FdKey("Direct URL", mode == AddMode.URL, FdAccent.CYAN) { mode = AddMode.URL }
+                    FdKey("Broadcastify ID", mode == AddMode.BROADCASTIFY, FdAccent.CYAN) {
+                        mode = AddMode.BROADCASTIFY
+                    }
                 }
 
                 OutlinedTextField(
@@ -81,11 +78,7 @@ fun AddFeedDialog(
                         )
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             FeedType.entries.forEach { t ->
-                                FilterChip(
-                                    selected = t == type,
-                                    onClick = { type = t },
-                                    label = { Text(typeLabel(t)) },
-                                )
+                                FdKey(typeLabel(t), t == type, FdAccent.CYAN) { type = t }
                             }
                         }
                     }
@@ -152,6 +145,9 @@ fun SettingsDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
+        containerColor = FlightDeck.panel,
+        titleContentColor = FlightDeck.textHi,
+        textContentColor = FlightDeck.text,
         title = { Text("Settings") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {

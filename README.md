@@ -16,8 +16,29 @@ the tower while you drive past the airport, or tune the local PD on a road trip.
 - **Nearby** — sorts feeds by distance to your location (great on a road trip).
 - **Favorites**, **search**, background playback, lock-screen controls.
 - **Android Auto** — the same feed tree shows up in the car; tap to listen.
-- **Live radar** — listening to an airport? Tap **Radar** to watch live aircraft on a hand-drawn phosphor scope (ADS-B via [adsb.lol](https://adsb.lol/), free, no key): plane-silhouette glyphs by type, fading trails, range zoom, color skins, and tap any plane for details + a real photo of it ([planespotters](https://www.planespotters.net/)).
+- **Live radar** — listening to an airport? Swipe to **Radar** to watch live aircraft on a navigation-display scope (ADS-B via [adsb.lol](https://adsb.lol/), free, no key): altitude-coloured targets, lead vectors, fading trails, range keys, and tap any plane for details + a real photo of it ([planespotters](https://www.planespotters.net/)).
+- **Flight recorder** — a rolling 30-minute buffer of the feed, split into transmissions you can re-read, replay and export as a clip.
+- **Alert rules** — arm keyword, tail-number or feed watches (MAYDAY, GO AROUND, your own N-number) and get a banner the moment one is heard.
+- **Audio panel** — comm-radio DSP: gain, squelch gate, EQ voicings, silence trimming, and a red-light **night mode**.
 - **AI layer** — toggle live **captions** (Groq Whisper), **plain-English** decoding, and **auto-follow** that spotlights the exact plane being talked to. Bring your own free [Groq](https://console.groq.com) key. Experimental.
+
+## Flight Deck
+
+The UI is styled as avionics: near-black panels, [B612 Mono](https://en.wikipedia.org/wiki/B612_(typeface))
+(the ESA cockpit typeface, bundled as TTFs — never fetched at runtime), and a fixed token palette
+in `ui/theme/Color.kt`. Five screens sit on one horizontal filmstrip:
+
+| Screen | What it is |
+| --- | --- |
+| **Home** | Comm panel — active radio stack, search, feed list, soft keys |
+| **Radar** | Navigation display — sweep, traffic, AI decode strip |
+| **History** | Flight recorder — one card per transmission, replay + clip export |
+| **Alerts** | Armed watch rules and the rule builder |
+| **Audio** | Signal-vs-squelch scope, gain/squelch, EQ, night mode |
+
+Two rules run through the whole thing: **all motion stops when the audio is paused** — a scope that
+keeps sweeping while nothing is playing is lying about being live — and **night mode is a second
+colour scheme**, not a filter, so red-light mode stays legible instead of muddy.
 
 ## How it’s built
 
@@ -105,6 +126,22 @@ on the phone:
 
 > Menu wording shifts between Android Auto versions, but the toggle is always **Developer settings →
 > Unknown sources**.
+
+### What the car surface can and can't be
+
+Worth being straight about this, because the Flight Deck design mocks a full custom head-unit
+screen. **Android Auto media apps do not draw their own UI.** The app hands the system
+`MediaItem`s and Google's Media Template renders them — there is no hook for a custom rail, a
+glance radar scope, a caption bar or a heads-up alert card. The Car App Library (`androidx.car.app`)
+doesn't close the gap either: its templates cover navigation, POI, parking and charging, not media,
+and free-form surface drawing is limited to navigation-category apps.
+
+So what the car actually gets is everything reachable through content: three segments
+(Favorites / Air Traffic / Scanner), **at most six items per list**, a grid layout so every target
+clears the 72dp minimum, nearest-first ordering, and the feed code plus frequency in each card's
+title. That's `playback/MediaItemTree.kt` in full. A true Flight Deck head-unit screen would mean
+targeting **Android Automotive OS**, where the app owns the display — a different build and a
+different distribution story.
 
 ### Test it without a car — Desktop Head Unit (DHU)
 1. In **Android Studio → SDK Manager → SDK Tools**, install **“Android Auto Desktop Head Unit emulator.”**

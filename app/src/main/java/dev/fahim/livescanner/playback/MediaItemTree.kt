@@ -1,5 +1,6 @@
 package dev.fahim.livescanner.playback
 
+import android.os.Bundle
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import com.google.common.collect.ImmutableList
@@ -9,15 +10,16 @@ import dev.fahim.livescanner.data.FeedType
 import dev.fahim.livescanner.data.LocationProvider
 
 /**
- * Builds the browsable content tree consumed by MediaBrowser clients — most importantly
- * Android Auto, which renders its own UI directly from these MediaItems.
+ * The browsable content tree Android Auto renders its own UI from.
+ *
+ * Driving constraints shape this, not decoration: three segments instead of five, at most six
+ * cards in any list, and a grid layout so every target clears the 72dp minimum. A media app hands
+ * the head unit content — the system draws it — so this file is the whole of what we control.
  *
  *   root
- *    ├─ Nearby      (feeds sorted by distance to last-known location)
- *    ├─ Air Traffic (FeedType.ATC)
- *    ├─ Scanner     (FeedType.SCANNER)
  *    ├─ Favorites
- *    └─ All Feeds
+ *    ├─ Air Traffic
+ *    └─ Scanner
  */
 class MediaItemTree(
     private val repository: FeedRepository,
@@ -26,27 +28,32 @@ class MediaItemTree(
 
     fun rootItem(): MediaItem = browsable(ROOT_ID, "Live Scanner", null)
 
+    /** Extras that tell Android Auto to lay the browse tree out as a grid. */
+    fun contentStyleExtras(): Bundle = Bundle().apply {
+        putBoolean(CONTENT_STYLE_SUPPORTED, true)
+        putInt(CONTENT_STYLE_BROWSABLE_HINT, CONTENT_STYLE_GRID_ITEM)
+        putInt(CONTENT_STYLE_PLAYABLE_HINT, CONTENT_STYLE_GRID_ITEM)
+    }
+
     fun rootChildren(): ImmutableList<MediaItem> = ImmutableList.copyOf(
         listOf(
-            browsable(CAT_NEARBY, "Nearby", "Closest feeds to you"),
-            browsable(CAT_ATC, "Air Traffic", "Airport control towers"),
+            browsable(CAT_FAVORITES, "Favorites", "Your starred feeds"),
+            browsable(CAT_ATC, "Air Traffic", "Nearest control towers"),
             browsable(CAT_SCANNER, "Scanner", "Police · fire · EMS"),
-            browsable(CAT_FAVORITES, "Favorites", null),
-            browsable(CAT_ALL, "All Feeds", null),
         ),
     )
 
     fun children(parentId: String): ImmutableList<MediaItem> {
         if (parentId == ROOT_ID) return rootChildren()
+        val here = locationProvider.lastKnownLocation()
         val feeds = when (parentId) {
-            CAT_NEARBY -> repository.nearbyFeeds(locationProvider.lastKnownLocation())
-            CAT_ATC -> repository.feedsByType(FeedType.ATC)
-            CAT_SCANNER -> repository.feedsByType(FeedType.SCANNER)
             CAT_FAVORITES -> repository.favoriteFeeds()
-            CAT_ALL -> repository.allFeeds.value.sortedBy { it.name }
+            // Nearest first: on the road the useful tower is the one you are driving past.
+            CAT_ATC -> repository.nearbyFeeds(here).filter { it.type == FeedType.ATC }
+            CAT_SCANNER -> repository.nearbyFeeds(here).filter { it.type == FeedType.SCANNER }
             else -> emptyList()
         }
-        return ImmutableList.copyOf(feeds.map(::feedItem))
+        return ImmutableList.copyOf(feeds.take(CAR_MAX_ITEMS).map(::feedItem))
     }
 
     fun itemById(mediaId: String): MediaItem? = when {
@@ -56,7 +63,7 @@ class MediaItemTree(
     }
 
     fun searchItems(query: String): ImmutableList<MediaItem> =
-        ImmutableList.copyOf(repository.search(query).map(::feedItem))
+        ImmutableList.copyOf(repository.search(query).take(CAR_MAX_ITEMS).map(::feedItem))
 
     /** Turns a browse item (mediaId only) into a fully playable item carrying its stream URI. */
     fun resolveForPlayback(item: MediaItem): MediaItem {
@@ -72,9 +79,10 @@ class MediaItemTree(
     private fun feedItem(feed: Feed): MediaItem = feedItemBuilder(feed).build()
 
     private fun feedItemBuilder(feed: Feed): MediaItem.Builder {
+        // The head unit gets the code and frequency, not the long name — it has to read at a glance.
         val metadata = MediaMetadata.Builder()
-            .setTitle(feed.name)
-            .setSubtitle(feed.subtitle)
+            .setTitle("${feed.displayCode} · ${feed.name}")
+            .setSubtitle(listOfNotNull(feed.location, feed.frequency).joinToString(" · "))
             .setArtist(feed.location ?: feed.subtitle)
             .setIsBrowsable(false)
             .setIsPlayable(true)
@@ -102,10 +110,18 @@ class MediaItemTree(
     companion object {
         const val ROOT_ID = "root"
         const val CAT_PREFIX = "cat:"
-        const val CAT_NEARBY = "cat:nearby"
         const val CAT_ATC = "cat:atc"
         const val CAT_SCANNER = "cat:scanner"
         const val CAT_FAVORITES = "cat:favorites"
-        const val CAT_ALL = "cat:all"
+
+        /** Android Auto's driver-distraction cap: six items per list, no exceptions. */
+        const val CAR_MAX_ITEMS = 6
+
+        private const val CONTENT_STYLE_SUPPORTED = "android.media.browse.CONTENT_STYLE_SUPPORTED"
+        private const val CONTENT_STYLE_BROWSABLE_HINT =
+            "android.media.browse.CONTENT_STYLE_BROWSABLE_HINT"
+        private const val CONTENT_STYLE_PLAYABLE_HINT =
+            "android.media.browse.CONTENT_STYLE_PLAYABLE_HINT"
+        private const val CONTENT_STYLE_GRID_ITEM = 2
     }
 }

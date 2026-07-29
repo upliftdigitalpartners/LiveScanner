@@ -37,8 +37,23 @@ data class Feed(
     val lat: Double? = null,
     val lon: Double? = null,
     val description: String? = null,
+    /** 4-char panel chip, e.g. KBOS. Derived from [id] when the catalog doesn't carry one. */
+    val code: String? = null,
+    /** Tuned frequency as displayed, e.g. "128.80". Null when unknown — the panel hides it. */
+    val frequency: String? = null,
 ) {
     val hasCoordinates: Boolean get() = lat != null && lon != null
+
+    /**
+     * The chip shown on every panel row. LiveATC ids carry the ICAO ("liveatc:kbos_twr" → KBOS);
+     * Broadcastify and custom feeds fall back to a source tag.
+     */
+    val displayCode: String
+        get() = code?.uppercase() ?: when (source) {
+            FeedSource.LIVEATC -> id.substringAfter(':').substringBefore('_').take(4).uppercase()
+            FeedSource.BROADCASTIFY -> "BCFY"
+            FeedSource.CUSTOM -> "CUST"
+        }
 
     /** Secondary line for list rows: location plus a short source/type tag. */
     val subtitle: String
@@ -60,6 +75,9 @@ data class CatalogFile(
 
 /** Simple coordinate pair used for "Nearby" sorting. */
 data class LatLng(val lat: Double, val lon: Double)
+
+/** Great-circle distance in nautical miles — the unit the panel reads in. */
+fun Feed.distanceNmFrom(from: LatLng?): Double? = distanceKmFrom(from)?.let { it / 1.852 }
 
 /** Great-circle distance in kilometres between this feed and [from], or null if either lacks coords. */
 fun Feed.distanceKmFrom(from: LatLng?): Double? {

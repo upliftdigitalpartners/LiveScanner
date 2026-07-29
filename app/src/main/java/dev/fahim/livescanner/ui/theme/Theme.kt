@@ -4,31 +4,73 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.graphics.Color
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.ui.text.TextStyle
 
-// Dark-only "scanner console" palette.
-private val DarkColors = darkColorScheme(
-    primary = Color(0xFF5BC8FF),
-    onPrimary = Color(0xFF00344B),
-    primaryContainer = Color(0xFF004C6B),
-    onPrimaryContainer = Color(0xFFCDE9FF),
-    secondary = Color(0xFF8FD06A),
-    onSecondary = Color(0xFF12380A),
-    background = Color(0xFF0B1116),
-    onBackground = Color(0xFFE2E7EB),
-    surface = Color(0xFF121C24),
-    onSurface = Color(0xFFE2E7EB),
-    surfaceVariant = Color(0xFF1E2A33),
-    onSurfaceVariant = Color(0xFFB3C0CA),
-    error = Color(0xFFFFB4AB),
-    outline = Color(0xFF3A4954),
-)
+/** Design tokens for the current (day or night) treatment. */
+val LocalFlightDeck = staticCompositionLocalOf { DayPalette }
+
+/** Shorthand: `FlightDeck.cyan` inside any composable. */
+val FlightDeck: FlightDeckPalette
+    @Composable get() = LocalFlightDeck.current
 
 @Composable
-fun LiveScannerTheme(content: @Composable () -> Unit) {
-    MaterialTheme(
-        colorScheme = DarkColors,
-        typography = Typography(),
-        content = content,
+fun LiveScannerTheme(
+    night: Boolean = false,
+    content: @Composable () -> Unit,
+) {
+    val palette = if (night) NightPalette else DayPalette
+
+    // Material 3 still backs a few stock components (dialogs, text fields, sliders); map the
+    // tokens onto its scheme so nothing falls back to purple.
+    val scheme = darkColorScheme(
+        primary = palette.cyan,
+        onPrimary = palette.bg,
+        primaryContainer = palette.cyanBg,
+        onPrimaryContainer = palette.cyan,
+        secondary = palette.green,
+        onSecondary = palette.bg,
+        tertiary = palette.amber,
+        onTertiary = palette.bg,
+        background = palette.bg,
+        onBackground = palette.text,
+        surface = palette.panel,
+        onSurface = palette.text,
+        surfaceVariant = palette.panelAlt,
+        onSurfaceVariant = palette.textDim,
+        error = palette.red,
+        onError = palette.bg,
+        outline = palette.stroke,
+        outlineVariant = palette.strokeDim,
     )
+
+    // Every stock Material style is re-pointed at B612 Mono so dialogs and text fields match the
+    // panel without each call site having to say so.
+    val base = TextStyle(fontFamily = B612Mono)
+    val typography = Typography(
+        displayLarge = base.copy(fontSize = FdType.ident),
+        displayMedium = base.copy(fontSize = FdType.frequency),
+        displaySmall = base.copy(fontSize = FdType.wordmark),
+        headlineLarge = base.copy(fontSize = FdType.wordmark),
+        headlineMedium = base.copy(fontSize = FdType.screenTitle),
+        headlineSmall = base.copy(fontSize = FdType.screenTitle, letterSpacing = FdTracking.title),
+        titleLarge = base.copy(fontSize = FdType.screenTitle),
+        titleMedium = base.copy(fontSize = FdType.rowTitle),
+        titleSmall = base.copy(fontSize = FdType.rowTitle),
+        bodyLarge = base.copy(fontSize = FdType.body),
+        bodyMedium = base.copy(fontSize = FdType.body),
+        bodySmall = base.copy(fontSize = FdType.control),
+        labelLarge = base.copy(fontSize = FdType.control, letterSpacing = FdTracking.control),
+        labelMedium = base.copy(fontSize = FdType.control),
+        labelSmall = base.copy(fontSize = FdType.sectionLabel),
+    )
+
+    CompositionLocalProvider(LocalFlightDeck provides palette) {
+        MaterialTheme(
+            colorScheme = scheme,
+            typography = typography,
+            content = content,
+        )
+    }
 }

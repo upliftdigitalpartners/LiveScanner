@@ -65,12 +65,15 @@ class FeedRepository(
             .map { it.first }
     }
 
+    /** Matches code, name, city and frequency — the four things the panel's search box promises. */
     fun search(query: String): List<Feed> {
         val q = query.trim()
         if (q.isEmpty()) return emptyList()
         return allFeeds.value.filter { feed ->
-            feed.name.contains(q, ignoreCase = true) ||
+            feed.displayCode.contains(q, ignoreCase = true) ||
+                feed.name.contains(q, ignoreCase = true) ||
                 feed.location?.contains(q, ignoreCase = true) == true ||
+                feed.frequency?.contains(q, ignoreCase = true) == true ||
                 feed.description?.contains(q, ignoreCase = true) == true
         }.sortedBy { it.name }
     }

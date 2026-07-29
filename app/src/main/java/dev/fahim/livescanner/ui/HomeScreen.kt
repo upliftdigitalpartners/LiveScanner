@@ -1,8 +1,8 @@
 package dev.fahim.livescanner.ui
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -10,401 +10,498 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Flight
-import androidx.compose.material.icons.filled.MyLocation
-import androidx.compose.material.icons.filled.Pause
-import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Radar
-import androidx.compose.material.icons.filled.Radio
-import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.Star
-import androidx.compose.material.icons.filled.StarBorder
-import androidx.compose.material.icons.filled.Stop
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.ExtendedFloatingActionButton
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Surface
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.fahim.livescanner.data.Feed
 import dev.fahim.livescanner.data.FeedRepository
 import dev.fahim.livescanner.data.FeedType
 import dev.fahim.livescanner.data.LatLng
-import dev.fahim.livescanner.data.distanceKmFrom
+import dev.fahim.livescanner.data.distanceNmFrom
+import dev.fahim.livescanner.ui.theme.B612Mono
+import dev.fahim.livescanner.ui.theme.FdDim
+import dev.fahim.livescanner.ui.theme.FdTracking
+import dev.fahim.livescanner.ui.theme.FdType
+import dev.fahim.livescanner.ui.theme.FlightDeck
+import java.time.Instant
+import java.time.ZoneOffset
+import java.time.format.DateTimeFormatter
 import kotlin.math.roundToInt
 
-enum class FeedTab(val label: String) {
-    NEARBY("Nearby"),
-    ATC("Air Traffic"),
-    SCANNER("Scanner"),
-    FAVORITES("Favorites"),
-    ALL("All"),
-}
+private val UTC_CLOCK: DateTimeFormatter =
+    DateTimeFormatter.ofPattern("HH:mm:ss").withZone(ZoneOffset.UTC)
 
+/**
+ * The comm panel: what is playing, what else you could tune, and the way through to every other
+ * surface. Everything above the feed list is the radio stack; everything below is the band.
+ */
 @Composable
 fun HomeScreen(
     vm: MainViewModel,
     onAddFeed: () -> Unit,
     onOpenSettings: () -> Unit,
-    onOpenRadar: (Feed) -> Unit,
 ) {
+    val p = FlightDeck
     val allFeeds by vm.allFeeds.collectAsStateWithLifecycle()
     val favorites by vm.favorites.collectAsStateWithLifecycle()
-    val customFeeds by vm.customFeeds.collectAsStateWithLifecycle()
     val playback by vm.playback.collectAsStateWithLifecycle()
     val location by vm.location.collectAsStateWithLifecycle()
     val query by vm.query.collectAsStateWithLifecycle()
+    val tab by vm.tab.collectAsStateWithLifecycle()
+    val alerts by vm.alerts.collectAsStateWithLifecycle()
+    val utcTick by vm.utcTick.collectAsStateWithLifecycle()
 
-    var tab by rememberSaveable { mutableStateOf(FeedTab.NEARBY) }
-
-    val locationLauncher = rememberLocationPermissionLauncher { granted ->
+    val requestLocation = rememberLocationPermissionLauncher { granted ->
         if (granted) vm.refreshLocation()
     }
 
-    val feeds = remember(tab, query, location, allFeeds, favorites, customFeeds) {
+    val feeds = remember(tab, query, location, allFeeds, favorites, playback.currentMediaId) {
         feedsFor(vm.repository, tab, query, location)
+            .filterNot { it.id == playback.currentMediaId }
     }
-    val customIds = remember(customFeeds) { customFeeds.map { it.id }.toSet() }
+    val armedRules = alerts.rules.count { it.on }
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text("Live Scanner", fontWeight = FontWeight.SemiBold) },
-                actions = {
-                    IconButton(onClick = onOpenSettings) {
-                        Icon(Icons.Default.Settings, contentDescription = "Settings")
-                    }
-                },
-            )
-        },
-        bottomBar = {
-            val current = playback.currentMediaId?.let { id -> allFeeds.firstOrNull { it.id == id } }
-            NowPlayingBar(
-                state = playback,
-                onRadar = current?.takeIf { it.hasCoordinates }?.let { feed -> { onOpenRadar(feed) } },
-                onToggle = vm::togglePlayPause,
-                onStop = vm::stop,
-            )
-        },
-        floatingActionButton = {
-            ExtendedFloatingActionButton(
-                onClick = onAddFeed,
-                icon = { Icon(Icons.Default.Add, contentDescription = null) },
-                text = { Text("Add feed") },
-            )
-        },
-    ) { padding ->
-        Column(
+    Column(
+        Modifier
+            .fillMaxSize()
+            .background(p.bg)
+            .statusBarsPadding(),
+    ) {
+        Header(utcTick)
+
+        Row(
             Modifier
-                .padding(padding)
-                .fillMaxSize(),
+                .fillMaxWidth()
+                .padding(horizontal = FdDim.gutter),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            OutlinedTextField(
-                value = query,
-                onValueChange = vm::setQuery,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 8.dp),
-                singleLine = true,
-                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
-                placeholder = { Text("Search feeds, cities, airports…") },
-            )
-
-            if (query.isBlank()) {
-                TabRow(selected = tab, onSelect = { tab = it })
-                if (tab == FeedTab.NEARBY && !vm.hasLocationPermission()) {
-                    LocationPrompt(onEnable = { locationLauncher() })
-                }
-            }
-
-            if (feeds.isEmpty()) {
-                EmptyState(tab = tab, searching = query.isNotBlank(), onAddFeed = onAddFeed)
-            } else {
-                LazyColumn(Modifier.fillMaxSize()) {
-                    items(items = feeds, key = { it.id }) { feed ->
-                        FeedRow(
-                            feed = feed,
-                            isCurrent = playback.currentMediaId == feed.id,
-                            isPlaying = playback.isPlaying && playback.currentMediaId == feed.id,
-                            isFavorite = feed.id in favorites,
-                            removable = feed.id in customIds,
-                            distanceKm = feed.distanceKmFrom(location),
-                            onPlay = { vm.play(feed) },
-                            onToggleFavorite = { vm.toggleFavorite(feed.id) },
-                            onRemove = { vm.removeFeed(feed.id) },
-                        )
-                    }
-                }
-            }
+            FdKey("HIST", false, FdAccent.NEUTRAL, Modifier.weight(1f)) { vm.goTo(Screen.HISTORY) }
+            FdKey(
+                "ALRT",
+                active = armedRules > 0,
+                accent = FdAccent.AMBER,
+                modifier = Modifier.weight(1f),
+            ) { vm.goTo(Screen.ALERTS) }
+            FdKey("AUDIO", false, FdAccent.NEUTRAL, Modifier.weight(1f)) { vm.goTo(Screen.AUDIO) }
+            FdKey("SET", false, FdAccent.NEUTRAL, Modifier.weight(1f), onClick = onOpenSettings)
         }
-    }
-}
 
-@Composable
-private fun TabRow(selected: FeedTab, onSelect: (FeedTab) -> Unit) {
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .horizontalScroll(rememberScrollState())
-            .padding(horizontal = 12.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        FeedTab.entries.forEach { t ->
-            FilterChip(
-                selected = t == selected,
-                onClick = { onSelect(t) },
-                label = { Text(t.label) },
-            )
-        }
-    }
-}
-
-@Composable
-private fun LocationPrompt(onEnable: () -> Unit) {
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        Icon(Icons.Default.MyLocation, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-        Text(
-            "Allow location to sort feeds by distance.",
-            style = MaterialTheme.typography.bodyMedium,
-            modifier = Modifier.weight(1f),
+        Spacer(Modifier.height(12.dp))
+        RadioStack(
+            playback = playback,
+            distanceNm = playback.feed?.distanceNmFrom(location),
+            radarEnabled = vm.radarAvailable(),
+            onRadar = { vm.goTo(Screen.RADAR) },
+            onToggle = vm::togglePlayPause,
         )
-        TextButton(onClick = onEnable) { Text("Enable") }
+
+        Spacer(Modifier.height(12.dp))
+        SearchField(query, vm::setQuery)
+
+        Spacer(Modifier.height(14.dp))
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = FdDim.gutter),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            SectionLabel(
+                if (query.isNotBlank()) "SEARCH RESULTS" else "STANDBY FEEDS · ${tabSubtitle(tab)}",
+                Modifier.weight(1f),
+            )
+            SectionLabel("SIG")
+        }
+
+        // NRST is meaningless without a fix, so offer the grant right where the sort is promised.
+        if (tab == FeedTab.NRST && query.isBlank() && !vm.hasLocationPermission()) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = FdDim.gutter, vertical = 6.dp)
+                    .clip(RoundedCornerShape(FdDim.radiusRow))
+                    .background(p.panelAlt)
+                    .border(1.dp, p.strokeDim, RoundedCornerShape(FdDim.radiusRow))
+                    .clickable { requestLocation() }
+                    .padding(FdDim.rowPadding),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                PanelText(
+                    "ALLOW LOCATION TO SORT BY DISTANCE",
+                    Modifier.weight(1f),
+                    color = p.textFaint,
+                    size = FdType.control,
+                )
+                PanelText("ENABLE", color = p.cyan, size = FdType.control, bold = true)
+            }
+        }
+
+        Spacer(Modifier.height(6.dp))
+        if (feeds.isEmpty()) {
+            EmptyState(tab, query.isNotBlank())
+        } else {
+            LazyColumn(
+                Modifier
+                    .weight(1f)
+                    .fillMaxWidth(),
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(
+                    horizontal = FdDim.gutter,
+                    vertical = 4.dp,
+                ),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                items(items = feeds, key = { it.id }) { feed ->
+                    FeedRow(
+                        feed = feed,
+                        isFavorite = feed.id in favorites,
+                        distanceNm = feed.distanceNmFrom(location),
+                        onPlay = { vm.play(feed) },
+                        onToggleFavorite = { vm.toggleFavorite(feed.id) },
+                    )
+                }
+            }
+        }
+
+        SoftKeys(
+            tab = tab,
+            onTab = vm::setTab,
+            onAdd = onAddFeed,
+        )
+    }
+}
+
+@Composable
+private fun Header(utcMillis: Long) {
+    val p = FlightDeck
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = FdDim.gutter, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            "LIVE SCANNER",
+            fontFamily = B612Mono,
+            fontSize = FdType.wordmark,
+            fontWeight = FontWeight.Bold,
+            letterSpacing = FdTracking.wordmark,
+            color = p.textHi,
+        )
+        Spacer(Modifier.width(10.dp))
+        SectionLabel("COMM PANEL", Modifier.weight(1f))
+        Text(
+            "UTC ${UTC_CLOCK.format(Instant.ofEpochMilli(utcMillis))}",
+            fontFamily = B612Mono,
+            fontSize = FdType.control,
+            letterSpacing = FdTracking.control,
+            color = p.cyan,
+        )
+    }
+}
+
+/** The active radio stack: the one feed you are on, and the two things you can do to it. */
+@Composable
+private fun RadioStack(
+    playback: PlaybackUiState,
+    distanceNm: Double?,
+    radarEnabled: Boolean,
+    onRadar: () -> Unit,
+    onToggle: () -> Unit,
+) {
+    val p = FlightDeck
+    val feed = playback.feed
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = FdDim.gutter)
+            .clip(RoundedCornerShape(FdDim.radiusCard))
+            .background(Brush.verticalGradient(listOf(Color(0xFF0B1219), Color(0xFF080E14))))
+            .border(1.dp, p.stroke, RoundedCornerShape(FdDim.radiusCard))
+            .padding(FdDim.cardPaddingTight),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            SectionLabel("ACTIVE · COMM 1", Modifier.weight(1f))
+            StatusDot(live = playback.isPlaying)
+            Spacer(Modifier.width(6.dp))
+            Text(
+                when {
+                    playback.errorMessage != null -> "NO SIGNAL"
+                    playback.isBuffering -> "ACQUIRING"
+                    playback.isPlaying -> "RX LIVE"
+                    else -> "STANDBY"
+                },
+                fontFamily = B612Mono,
+                fontSize = FdType.control,
+                letterSpacing = FdTracking.control,
+                color = if (playback.isPlaying) p.green else p.amber,
+            )
+        }
+
+        Spacer(Modifier.height(8.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                feed?.let { "${it.displayCode} ${facilityWord(it.name)}" } ?: "— — —",
+                modifier = Modifier.weight(1f),
+                fontFamily = B612Mono,
+                fontSize = FdType.ident,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = FdTracking.ident,
+                color = p.amber,
+                maxLines = 1,
+            )
+            feed?.frequency?.let { freq ->
+                Text(
+                    freq,
+                    fontFamily = B612Mono,
+                    fontSize = FdType.frequency,
+                    fontWeight = FontWeight.Bold,
+                    color = p.amber,
+                    maxLines = 1,
+                )
+            }
+        }
+
+        PanelText(
+            buildString {
+                append(feed?.name?.uppercase() ?: "NOTHING TUNED")
+                if (distanceNm != null) append(" · ${formatNm(distanceNm)}")
+            },
+            color = p.textFaint,
+            size = FdType.control,
+            maxLines = 1,
+        )
+
+        playback.errorMessage?.let {
+            Spacer(Modifier.height(4.dp))
+            PanelText(it.uppercase(), color = p.red, size = FdType.control, maxLines = 2)
+        }
+
+        Spacer(Modifier.height(12.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            VuBars(playing = playback.isPlaying, modifier = Modifier.weight(1f))
+            FdKey(
+                "RADAR ▸",
+                active = true,
+                accent = FdAccent.GREEN,
+                enabled = radarEnabled,
+                onClick = onRadar,
+            )
+            Spacer(Modifier.width(8.dp))
+            FdKey(
+                if (playback.isPlaying) "❚❚ PAUSE" else "▶ RESUME",
+                active = false,
+                accent = FdAccent.NEUTRAL,
+                enabled = playback.currentMediaId != null,
+                onClick = onToggle,
+            )
+        }
+    }
+}
+
+@Composable
+private fun SearchField(query: String, onQuery: (String) -> Unit) {
+    val p = FlightDeck
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = FdDim.gutter)
+            .clip(RoundedCornerShape(FdDim.radiusRow))
+            .background(p.panelAlt)
+            .border(1.dp, p.strokeInput, RoundedCornerShape(FdDim.radiusRow))
+            .padding(horizontal = 12.dp, vertical = 12.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "⌕",
+                fontFamily = B612Mono,
+                fontSize = FdType.body,
+                color = p.textGhost,
+            )
+            Spacer(Modifier.width(8.dp))
+            Box(Modifier.weight(1f)) {
+                if (query.isEmpty()) {
+                    Text(
+                        "SEARCH IDENT / CITY / FREQ…",
+                        fontFamily = B612Mono,
+                        fontSize = FdType.control,
+                        letterSpacing = FdTracking.control,
+                        color = p.textGhost,
+                    )
+                }
+                BasicTextField(
+                    value = query,
+                    onValueChange = onQuery,
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    textStyle = TextStyle(
+                        fontFamily = B612Mono,
+                        fontSize = FdType.control,
+                        letterSpacing = FdTracking.control,
+                        color = p.textHi,
+                    ),
+                    cursorBrush = SolidColor(p.cyan),
+                )
+            }
+        }
     }
 }
 
 @Composable
 private fun FeedRow(
     feed: Feed,
-    isCurrent: Boolean,
-    isPlaying: Boolean,
     isFavorite: Boolean,
-    removable: Boolean,
-    distanceKm: Double?,
+    distanceNm: Double?,
     onPlay: () -> Unit,
     onToggleFavorite: () -> Unit,
-    onRemove: () -> Unit,
 ) {
-    val container =
-        if (isCurrent) MaterialTheme.colorScheme.surfaceVariant else MaterialTheme.colorScheme.surface
-    Surface(color = container, onClick = onPlay) {
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Icon(
-                imageVector = typeIcon(feed.type),
-                contentDescription = null,
-                tint = if (isCurrent) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(28.dp),
-            )
-            Spacer(Modifier.width(14.dp))
-            Column(Modifier.weight(1f)) {
-                Text(
-                    feed.name,
-                    style = MaterialTheme.typography.titleMedium,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    color = if (isCurrent) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                )
-                Text(
-                    buildString {
-                        append(feed.subtitle)
-                        if (distanceKm != null) append("  ·  ${formatDistance(distanceKm)}")
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-            if (isPlaying) {
-                LiveDot()
-                Spacer(Modifier.width(4.dp))
-            }
-            if (removable) {
-                IconButton(onClick = onRemove) {
-                    Icon(Icons.Default.Delete, contentDescription = "Remove feed", tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-            }
-            IconButton(onClick = onToggleFavorite) {
-                Icon(
-                    imageVector = if (isFavorite) Icons.Default.Star else Icons.Default.StarBorder,
-                    contentDescription = if (isFavorite) "Unfavorite" else "Favorite",
-                    tint = if (isFavorite) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun NowPlayingBar(
-    state: PlaybackUiState,
-    onRadar: (() -> Unit)?,
-    onToggle: () -> Unit,
-    onStop: () -> Unit,
-) {
-    if (state.currentMediaId == null) return
-    Surface(
-        color = MaterialTheme.colorScheme.surfaceVariant,
-        tonalElevation = 3.dp,
+    val p = FlightDeck
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(FdDim.radiusRow))
+            .background(p.panel)
+            .border(1.dp, p.strokeDim, RoundedCornerShape(FdDim.radiusRow))
+            .clickable(onClick = onPlay)
+            .padding(FdDim.rowPadding),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .navigationBarsPadding()
-                .padding(start = 16.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Column(Modifier.weight(1f)) {
-                Text(
-                    state.title ?: "—",
-                    style = MaterialTheme.typography.titleSmall,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                StatusLine(state)
-            }
-            if (state.isBuffering) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(24.dp),
-                    strokeWidth = 2.dp,
-                )
-                Spacer(Modifier.width(8.dp))
-            }
-            onRadar?.let { open ->
-                IconButton(onClick = open) {
-                    Icon(Icons.Default.Radar, contentDescription = "Radar")
-                }
-            }
-            IconButton(onClick = onToggle) {
-                Icon(
-                    imageVector = if (state.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                    contentDescription = if (state.isPlaying) "Pause" else "Play",
-                )
-            }
-            IconButton(onClick = onStop) {
-                Icon(Icons.Default.Stop, contentDescription = "Stop")
-            }
-        }
-    }
-}
-
-@Composable
-private fun StatusLine(state: PlaybackUiState) {
-    when {
-        state.errorMessage != null -> Text(
-            state.errorMessage,
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.error,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
+        CodeChip(
+            feed.displayCode,
+            if (feed.type == FeedType.ATC) FdAccent.CYAN else FdAccent.MAGENTA,
         )
-        state.isBuffering -> Text(
-            "Buffering…",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        state.isPlaying -> Row(verticalAlignment = Alignment.CenterVertically) {
-            LiveDot()
-            Spacer(Modifier.width(6.dp))
-            Text("LIVE", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            if (state.subtitle != null) {
-                Text("  ·  ${state.subtitle}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            }
+        Spacer(Modifier.width(10.dp))
+        Column(Modifier.weight(1f)) {
+            PanelText(
+                feed.name.uppercase(),
+                color = p.textHi,
+                size = FdType.rowTitle,
+                maxLines = 1,
+            )
+            PanelText(
+                buildString {
+                    feed.location?.let { append(it.uppercase()) }
+                    if (distanceNm != null) {
+                        if (isNotEmpty()) append(" · ")
+                        append(formatNm(distanceNm))
+                    }
+                    feed.frequency?.let {
+                        if (isNotEmpty()) append(" · ")
+                        append(it)
+                    }
+                },
+                color = p.textFaint,
+                size = FdType.control,
+                maxLines = 1,
+            )
         }
-        else -> Text(
-            "Paused",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        SignalStaircase(signalFor(distanceNm))
+        Spacer(Modifier.width(10.dp))
+        Text(
+            if (isFavorite) "★" else "☆",
+            modifier = Modifier
+                .clickable(onClick = onToggleFavorite)
+                .padding(4.dp),
+            fontFamily = B612Mono,
+            fontSize = FdType.rowTitle,
+            color = if (isFavorite) p.amber else p.textGhost,
         )
     }
 }
 
 @Composable
-private fun LiveDot() {
+private fun SoftKeys(tab: FeedTab, onTab: (FeedTab) -> Unit, onAdd: () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .navigationBarsPadding()
+            .padding(horizontal = FdDim.gutter, vertical = 10.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        FeedTab.entries.forEach { entry ->
+            FdKey(
+                entry.label,
+                active = entry == tab,
+                accent = FdAccent.GREEN,
+                modifier = Modifier.weight(1f),
+            ) { onTab(entry) }
+        }
+        FdKey("+ ADD", active = true, accent = FdAccent.AMBER, modifier = Modifier.weight(1.1f), onClick = onAdd)
+    }
+}
+
+@Composable
+private fun EmptyState(tab: FeedTab, searching: Boolean) {
     Box(
         Modifier
-            .size(8.dp)
-            .background(Color(0xFFE5484D), CircleShape),
-    )
-}
-
-@Composable
-private fun EmptyState(tab: FeedTab, searching: Boolean, onAddFeed: () -> Unit) {
-    Column(
-        Modifier
-            .fillMaxSize()
-            .padding(32.dp),
-        verticalArrangement = Arrangement.Center,
-        horizontalAlignment = Alignment.CenterHorizontally,
+            .fillMaxWidth()
+            .padding(FdDim.gutter),
+        contentAlignment = Alignment.Center,
     ) {
-        val message = when {
-            searching -> "No feeds match your search."
-            tab == FeedTab.FAVORITES -> "No favorites yet. Tap the ☆ on any feed."
-            tab == FeedTab.SCANNER -> "No scanner feeds yet.\nAdd a Broadcastify feed or a direct stream URL."
-            else -> "Nothing here yet."
-        }
-        Text(
-            message,
-            style = MaterialTheme.typography.bodyLarge,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        PanelText(
+            when {
+                searching -> "NO FEEDS MATCH THAT SEARCH"
+                tab == FeedTab.FAV -> "NO FAVORITES YET — TAP ☆ ON ANY FEED"
+                tab == FeedTab.SCAN -> "NO SCANNER FEEDS YET — ADD ONE WITH + ADD"
+                else -> "NOTHING ON THIS BAND"
+            },
+            color = FlightDeck.textFaint,
+            size = FdType.control,
         )
-        if (tab == FeedTab.SCANNER || tab == FeedTab.ALL) {
-            Spacer(Modifier.size(16.dp))
-            TextButton(onClick = onAddFeed) { Text("Add a feed") }
-        }
     }
 }
 
-private fun typeIcon(type: FeedType): ImageVector = when (type) {
-    FeedType.ATC -> Icons.Default.Flight
-    FeedType.SCANNER -> Icons.Default.Radio
-    FeedType.OTHER -> Icons.Default.Radio
+/** "Boston Logan Tower" → "TWR", so the ident line reads like a radio panel. */
+private fun facilityWord(name: String): String {
+    val upper = name.uppercase()
+    return when {
+        "GROUND" in upper -> "GND"
+        "TOWER" in upper || upper.endsWith(" TWR") -> "TWR"
+        "APPROACH" in upper -> "APP"
+        "DEPARTURE" in upper -> "DEP"
+        "CLEARANCE" in upper || "DELIVERY" in upper -> "DEL"
+        else -> "ATC"
+    }
 }
 
-private fun formatDistance(km: Double): String =
-    if (km < 1.0) "${(km * 1000).roundToInt()} m" else "${km.roundToInt()} km"
+private fun formatNm(nm: Double): String = "${nm.roundToInt()} NM"
+
+/**
+ * Signal bars stand in for reception quality, which no feed source reports. Distance is the one
+ * honest proxy available: a tower 5 NM away is genuinely more relevant than one 500 NM away.
+ */
+private fun signalFor(distanceNm: Double?): Int = when {
+    distanceNm == null -> 2
+    distanceNm < 50 -> 3
+    distanceNm < 200 -> 2
+    else -> 1
+}
+
+private fun tabSubtitle(tab: FeedTab): String = when (tab) {
+    FeedTab.NRST -> "SORTED BY DIST"
+    FeedTab.ATC -> "AIR TRAFFIC"
+    FeedTab.SCAN -> "SCANNER"
+    FeedTab.FAV -> "FAVORITES"
+}
 
 private fun feedsFor(
     repo: FeedRepository,
@@ -414,10 +511,9 @@ private fun feedsFor(
 ): List<Feed> {
     if (query.isNotBlank()) return repo.search(query)
     return when (tab) {
-        FeedTab.NEARBY -> repo.nearbyFeeds(location)
+        FeedTab.NRST -> repo.nearbyFeeds(location)
         FeedTab.ATC -> repo.feedsByType(FeedType.ATC)
-        FeedTab.SCANNER -> repo.feedsByType(FeedType.SCANNER)
-        FeedTab.FAVORITES -> repo.favoriteFeeds()
-        FeedTab.ALL -> repo.allFeeds.value.sortedBy { it.name }
+        FeedTab.SCAN -> repo.feedsByType(FeedType.SCANNER)
+        FeedTab.FAV -> repo.favoriteFeeds()
     }
 }
