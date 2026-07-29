@@ -2,6 +2,8 @@ package dev.fahim.livescanner.playback
 
 import android.content.Context
 import android.util.Log
+import java.io.DataInputStream
+import java.io.DataOutputStream
 import java.io.File
 import java.io.RandomAccessFile
 
@@ -10,8 +12,9 @@ import java.io.RandomAccessFile
  * wire. Storing MP3/AAC frames rather than decoded PCM is what makes 30 minutes affordable:
  * roughly 7 MB at 32 kbps, against ~58 MB for 16 kHz mono PCM.
  *
- * Backed by a fixed-size file used as a ring. [totalWritten] keeps counting past the ring size, so
- * a caller can hold a stable "absolute offset" and ask later whether it is still in the window.
+ * There is one ring per feed, and each survives app restarts — tune away from a tower and back
+ * and the last half hour is still there to scrub through. A sidecar index maps wall-clock time to
+ * byte offset and is flushed periodically, so an unclean kill loses at most a minute of index.
  *
  * Cutting the stream at an arbitrary byte offset yields a clip whose first frame is usually
  * partial; MP3 and ADTS decoders resync at the next frame header, which costs a few milliseconds
@@ -19,12 +22,14 @@ import java.io.RandomAccessFile
  */
 class AudioBuffer(context: Context) {
 
-    private val file = File(context.cacheDir, "stream_ring.bin")
+    private val dir = File(context.cacheDir, "rings").apply { mkdirs() }
     private val lock = Any()
 
     private var raf: RandomAccessFile? = null
+    private var feedId: String? = null
+    private var stampsSinceFlush = 0
 
-    /** Monotonic count of every byte ever written — never wraps. */
+    /** Monotonic count of every byte ever written to the current ring — never wraps. */
     @Volatile
     var totalWritten: Long = 0L
         private set
@@ -36,32 +41,57 @@ class AudioBuffer(context: Context) {
     val oldestRetained: Long
         get() = (totalWritten - CAPACITY).coerceAtLeast(0L)
 
-    fun open() {
+    /** True when the ring holds audio from a previous session. */
+    val hasHistory: Boolean
+        get() = totalWritten > 0L
+
+    /**
+     * Points the buffer at [newFeedId]'s ring, saving whatever the previous feed had accumulated.
+     * Tuning back to a feed restores its window rather than starting from nothing.
+     */
+    fun switchTo(newFeedId: String) {
         synchronized(lock) {
-            if (raf != null) return
-            try {
-                raf = RandomAccessFile(file, "rw").apply { setLength(CAPACITY) }
-                totalWritten = 0L
-                index.clear()
-            } catch (t: Throwable) {
-                Log.w(TAG, "buffer open failed", t)
-                raf = null
-            }
+            if (feedId == newFeedId && raf != null) return
+            closeLocked()
+            feedId = newFeedId
+            openLocked()
         }
+    }
+
+    /** Opens the current feed's ring if it isn't already; called by the data sink. */
+    fun ensureOpen() {
+        synchronized(lock) { if (raf == null && feedId != null) openLocked() }
     }
 
     fun close() {
-        synchronized(lock) {
-            runCatching { raf?.close() }
-            raf = null
-        }
+        synchronized(lock) { closeLocked() }
     }
 
-    fun reset() {
-        synchronized(lock) {
+    private fun ringFile(id: String) = File(dir, "${safeName(id)}.bin")
+    private fun indexFile(id: String) = File(dir, "${safeName(id)}.idx")
+
+    private fun openLocked() {
+        val id = feedId ?: return
+        try {
+            raf = RandomAccessFile(ringFile(id), "rw").apply { setLength(CAPACITY) }
+            loadIndexLocked(id)
+            pruneOldRings()
+        } catch (t: Throwable) {
+            Log.w(TAG, "buffer open failed", t)
+            raf = null
             totalWritten = 0L
             index.clear()
         }
+    }
+
+    private fun closeLocked() {
+        val id = feedId
+        if (id != null && raf != null) saveIndexLocked(id)
+        runCatching { raf?.close() }
+        raf = null
+        totalWritten = 0L
+        index.clear()
+        stampsSinceFlush = 0
     }
 
     fun write(data: ByteArray, offset: Int, length: Int) {
@@ -78,19 +108,22 @@ class AudioBuffer(context: Context) {
                     written += chunk
                 }
                 totalWritten += length
-                stampIndex()
+                stampIndexLocked()
             } catch (t: Throwable) {
                 Log.w(TAG, "buffer write failed", t)
             }
         }
     }
 
-    private fun stampIndex() {
+    private fun stampIndexLocked() {
         val now = System.currentTimeMillis()
         val last = index.lastOrNull()
-        if (last == null || now - last.first >= INDEX_INTERVAL_MS) {
-            index.addLast(now to totalWritten)
-            while (index.size > INDEX_MAX) index.removeFirst()
+        if (last != null && now - last.first < INDEX_INTERVAL_MS) return
+        index.addLast(now to totalWritten)
+        while (index.size > INDEX_MAX) index.removeFirst()
+        if (++stampsSinceFlush >= FLUSH_EVERY) {
+            stampsSinceFlush = 0
+            feedId?.let { saveIndexLocked(it) }
         }
     }
 
@@ -120,15 +153,13 @@ class AudioBuffer(context: Context) {
 
     /**
      * The most recent [millis] of audio, with the absolute offset it starts at, or null when the
-     * stream has not yet produced that much. Used both for live transcription and for carving a
-     * transmission's clip out of the window.
+     * stream has not yet produced that much.
      */
     fun latest(millis: Long): Segment? {
         synchronized(lock) {
             if (raf == null) return null
             val cutoff = System.currentTimeMillis() - millis
-            val start = index.firstOrNull { it.first >= cutoff }?.second
-                ?: return null
+            val start = index.firstOrNull { it.first >= cutoff }?.second ?: return null
             val length = (totalWritten - start).toInt()
             if (length <= 0) return null
             val bytes = read(start, length) ?: return null
@@ -150,6 +181,57 @@ class AudioBuffer(context: Context) {
         }
     }
 
+    private fun saveIndexLocked(id: String) {
+        try {
+            DataOutputStream(indexFile(id).outputStream().buffered()).use { out ->
+                out.writeLong(totalWritten)
+                out.writeInt(index.size)
+                for ((time, offset) in index) {
+                    out.writeLong(time)
+                    out.writeLong(offset)
+                }
+            }
+        } catch (t: Throwable) {
+            Log.w(TAG, "index save failed", t)
+        }
+    }
+
+    private fun loadIndexLocked(id: String) {
+        totalWritten = 0L
+        index.clear()
+        val file = indexFile(id)
+        if (!file.exists()) return
+        try {
+            DataInputStream(file.inputStream().buffered()).use { input ->
+                val total = input.readLong()
+                val count = input.readInt()
+                if (count !in 0..INDEX_MAX) return
+                val restored = ArrayList<Pair<Long, Long>>(count)
+                repeat(count) { restored.add(input.readLong() to input.readLong()) }
+                totalWritten = total
+                index.addAll(restored)
+            }
+        } catch (t: Throwable) {
+            Log.w(TAG, "index load failed", t)
+            totalWritten = 0L
+            index.clear()
+        }
+    }
+
+    /** Keep only the few most recently used rings so the cache can't grow without bound. */
+    private fun pruneOldRings() {
+        val rings = dir.listFiles { f -> f.name.endsWith(".bin") } ?: return
+        if (rings.size <= MAX_RINGS) return
+        rings.sortedBy { it.lastModified() }
+            .dropLast(MAX_RINGS)
+            .forEach { ring ->
+                ring.delete()
+                File(dir, ring.name.removeSuffix(".bin") + ".idx").delete()
+            }
+    }
+
+    private fun safeName(id: String): String = id.replace(Regex("[^A-Za-z0-9_-]"), "_").take(64)
+
     data class Segment(val offset: Long, val bytes: ByteArray) {
         override fun equals(other: Any?): Boolean =
             other is Segment && other.offset == offset && other.bytes.contentEquals(bytes)
@@ -163,6 +245,8 @@ class AudioBuffer(context: Context) {
         const val CAPACITY = 16L * 1024 * 1024
         const val INDEX_INTERVAL_MS = 1_000L
         const val INDEX_MAX = 2_400
+        const val FLUSH_EVERY = 60
+        const val MAX_RINGS = 3
         const val DEFAULT_BPS = 4_000.0 // 32 kbps
     }
 }

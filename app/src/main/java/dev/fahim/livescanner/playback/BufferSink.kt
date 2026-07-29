@@ -13,7 +13,7 @@ import androidx.media3.datasource.DataSpec
 class BufferSink(private val buffer: AudioBuffer) : DataSink {
 
     override fun open(dataSpec: DataSpec) {
-        buffer.open()
+        buffer.ensureOpen()
     }
 
     override fun write(buffer: ByteArray, offset: Int, length: Int) {

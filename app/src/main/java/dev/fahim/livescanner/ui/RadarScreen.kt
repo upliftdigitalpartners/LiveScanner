@@ -428,6 +428,27 @@ private fun Scope(
                 )
             }
 
+            // A flight you armed a rule for stays marked whether or not anyone is talking to it —
+            // that is the whole point of tracking it.
+            val isTracked = radar.tracked.any { wanted ->
+                wanted.equals(callsign, ignoreCase = true) ||
+                    wanted.equals(ac.registration?.trim(), ignoreCase = true)
+            }
+            if (isTracked) {
+                drawCircle(
+                    p.amber,
+                    radius = half * 2.6f,
+                    center = pos,
+                    style = Stroke(width = 2.dp.toPx()),
+                )
+                drawText(
+                    measurer,
+                    "TRK",
+                    topLeft = Offset(pos.x - half, pos.y + half * 2.8f),
+                    style = tagStyle.copy(color = p.amber),
+                )
+            }
+
             // Expanding green ping on a contact that just entered range.
             if (ac.hex == radar.newHex) {
                 val phase = ((seconds % 1.1) / 1.1).toFloat()

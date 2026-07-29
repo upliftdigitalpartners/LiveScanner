@@ -17,8 +17,9 @@ the tower while you drive past the airport, or tune the local PD on a road trip.
 - **Favorites**, **search**, background playback, lock-screen controls.
 - **Android Auto** — the same feed tree shows up in the car; tap to listen.
 - **Live radar** — listening to an airport? Swipe to **Radar** to watch live aircraft on a navigation-display scope (ADS-B via [adsb.lol](https://adsb.lol/), free, no key): altitude-coloured targets, lead vectors, fading trails, range keys, and tap any plane for details + a real photo of it ([planespotters](https://www.planespotters.net/)).
-- **Flight recorder** — a rolling 30-minute buffer of the feed, split into transmissions you can re-read, replay and export as a clip.
-- **Alert rules** — arm keyword, tail-number or feed watches (MAYDAY, GO AROUND, your own N-number) and get a banner the moment one is heard.
+- **Flight recorder** — a rolling 30-minute buffer of the feed, split into transmissions you can re-read, replay and export as a clip. One buffer per feed, and they survive restarts.
+- **Track a flight** — arm a rule with a flight number and the app follows it: banner and notification whenever it's addressed, an amber `TRK` ring on the scope, and a one-tap filter in the recorder showing only that aircraft's calls.
+- **Alert rules** — keyword, flight, tail-number and feed watches (MAYDAY, GO AROUND, your own N-number) with a banner and a notification the moment one is heard.
 - **Audio panel** — comm-radio DSP: gain, squelch gate, EQ voicings, silence trimming, and a red-light **night mode**.
 - **AI layer** — toggle live **captions** (Groq Whisper), **plain-English** decoding, and **auto-follow** that spotlights the exact plane being talked to. Bring your own free [Groq](https://console.groq.com) key. Experimental.
 
@@ -39,6 +40,19 @@ in `ui/theme/Color.kt`. Five screens sit on one horizontal filmstrip:
 Two rules run through the whole thing: **all motion stops when the audio is paused** — a scope that
 keeps sweeping while nothing is playing is lying about being live — and **night mode is a second
 colour scheme**, not a filter, so red-light mode stays legible instead of muddy.
+
+### Hearing your flight number
+
+Controllers never say "UAL328". They say *"United three twenty eight"*, and tail numbers come out
+as *"November four two five kilo hotel"*. So matching a rule against the raw transcript alone
+finds nothing.
+
+`data/Aviation.kt` closes that gap on two fronts. Whatever you type is normalised to one ICAO
+callsign — `UA328`, `ual 328` and `United 328` all become `UAL328`. Every transcript is then
+normalised in the other direction: spoken numbers collapse into digits (*"three twenty eight"* →
+`328`, *"ten oh six"* → `1006`, *"four fifty"* → `450`) and the phonetic alphabet folds back into
+letters, so `N425KH` is findable in a sentence that never spelled it. Rules also match against the
+callsign the transcriber independently resolved, which catches phrasings the text pass misses.
 
 ## How it’s built
 

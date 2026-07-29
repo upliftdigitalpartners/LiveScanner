@@ -7,6 +7,8 @@ import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -83,12 +85,38 @@ fun HistoryScreen(vm: MainViewModel, onBack: () -> Unit) {
     ) {
         ScreenHeader(
             title = "Flight Recorder",
-            subtitle = "${history.transmissions.size} transmissions · $icao",
+            subtitle = history.filterCallsign
+                ?.let { "${history.visible.size} transmissions · $it" }
+                ?: "${history.transmissions.size} transmissions · $icao",
             onBack = onBack,
             trailing = { FdChip("30 min buffer", FdAccent.CYAN) },
         )
 
-        if (history.transmissions.isEmpty()) {
+        // Filter row: tap a callsign to follow one aircraft through the log, tap again to clear.
+        if (history.callsigns.isNotEmpty()) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
+                    .padding(horizontal = FdDim.gutter, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                FdKey(
+                    label = "ALL",
+                    active = history.filterCallsign == null,
+                    accent = FdAccent.NEUTRAL,
+                ) { vm.filterHistory(null) }
+                history.callsigns.forEach { callsign ->
+                    FdKey(
+                        label = callsign,
+                        active = history.filterCallsign.equals(callsign, ignoreCase = true),
+                        accent = FdAccent.AMBER,
+                    ) { vm.filterHistory(callsign) }
+                }
+            }
+        }
+
+        if (history.visible.isEmpty()) {
             EmptyRecorder(
                 Modifier
                     .weight(1f)
@@ -107,7 +135,7 @@ fun HistoryScreen(vm: MainViewModel, onBack: () -> Unit) {
                 ),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                items(history.transmissions, key = { it.id }) { entry ->
+                items(history.visible, key = { it.id }) { entry ->
                     TransmissionCard(
                         entry = entry,
                         expanded = entry.id == history.expandedId,

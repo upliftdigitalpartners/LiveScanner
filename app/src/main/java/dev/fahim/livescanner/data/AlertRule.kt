@@ -3,7 +3,7 @@ package dev.fahim.livescanner.data
 import kotlinx.serialization.Serializable
 
 @Serializable
-enum class RuleType { KEYWORD, TAIL, FEED }
+enum class RuleType { KEYWORD, FLIGHT, TAIL, FEED }
 
 /** Accent hue for a rule's glyph, resolved against the palette at draw time. */
 @Serializable
@@ -23,11 +23,33 @@ data class AlertRule(
     val accent: RuleAccent = RuleAccent.CYAN,
     val terms: List<String> = emptyList(),
 ) {
-    fun matches(transcript: String): Boolean {
+    /**
+     * [resolvedCallsign] is what the transcriber worked out the transmission was addressed to.
+     * Matching on it as well as the raw text is what lets a rule typed as "UAL328" fire on
+     * "United three twenty eight" — the words never contain the callsign, but the resolution does.
+     */
+    fun matches(transcript: String, resolvedCallsign: String? = null): Boolean {
         if (!on || terms.isEmpty()) return false
         val upper = transcript.uppercase()
-        return terms.any { it.isNotBlank() && it.uppercase() in upper }
+        val resolved = resolvedCallsign?.trim()?.uppercase()
+        return terms.any { term ->
+            if (term.isBlank()) return@any false
+            val needle = term.uppercase()
+            when (type) {
+                RuleType.FLIGHT, RuleType.TAIL ->
+                    resolved == needle ||
+                        needle in upper ||
+                        transcriptMentionsCallsign(transcript, needle)
+
+                RuleType.KEYWORD, RuleType.FEED ->
+                    needle in upper || needle in normalizeTranscript(transcript)
+            }
+        }
     }
+
+    /** Rules that name a specific aircraft — these are the ones worth pinning on the scope. */
+    val tracksAircraft: Boolean
+        get() = type == RuleType.FLIGHT || type == RuleType.TAIL
 }
 
 /** The rules a fresh install starts with, straight from the design spec. */

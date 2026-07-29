@@ -5,6 +5,7 @@ import dev.fahim.livescanner.data.FeedCatalog
 import dev.fahim.livescanner.data.FeedRepository
 import dev.fahim.livescanner.data.LocationProvider
 import dev.fahim.livescanner.data.UserPrefs
+import dev.fahim.livescanner.playback.AlertNotifier
 import dev.fahim.livescanner.playback.AudioBuffer
 import dev.fahim.livescanner.playback.FlightDeckDsp
 import dev.fahim.livescanner.playback.ReplayPlayer
@@ -35,4 +36,5 @@ class AppContainer(app: Application) {
     val audioBuffer = AudioBuffer(app)
     val dsp = FlightDeckDsp()
     val replayPlayer = ReplayPlayer(app)
+    val notifier = AlertNotifier(app).apply { ensureChannel() }
 }

@@ -299,12 +299,14 @@ private fun accentColor(accent: RuleAccent): Color {
 
 private fun segmentLabel(type: RuleType): String = when (type) {
     RuleType.KEYWORD -> "KEYWORD"
+    RuleType.FLIGHT -> "FLIGHT"
     RuleType.TAIL -> "TAIL #"
     RuleType.FEED -> "FEED"
 }
 
 private fun placeholderFor(type: RuleType): String = when (type) {
     RuleType.KEYWORD -> "WORD OR PHRASE TO WATCH FOR…"
+    RuleType.FLIGHT -> "FLIGHT NO., E.G. UA328 OR UNITED 328"
     RuleType.TAIL -> "TAIL NUMBER, E.G. N425KH"
     RuleType.FEED -> "FEED NAME OR CODE"
 }

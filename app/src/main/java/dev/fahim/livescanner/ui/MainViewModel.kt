@@ -23,6 +23,7 @@ import dev.fahim.livescanner.data.RuleAccent
 import dev.fahim.livescanner.data.RuleType
 import dev.fahim.livescanner.data.Transmission
 import dev.fahim.livescanner.data.AdsbClient
+import dev.fahim.livescanner.data.normalizeFlightNumber
 import dev.fahim.livescanner.data.priorityFor
 import dev.fahim.livescanner.playback.EqPreset
 import dev.fahim.livescanner.playback.ScannerPlaybackService
@@ -65,13 +66,27 @@ data class RadarUiState(
     val caption: String? = null,
     /** Callsigns in the transmission currently being decoded — magenta ring on the scope. */
     val transcribing: Set<String> = emptySet(),
+    /** Callsigns named by an armed flight/tail rule — pinned on the scope whether or not
+     *  anyone is talking to them. */
+    val tracked: Set<String> = emptySet(),
 )
 
 data class HistoryUiState(
     val transmissions: List<Transmission> = emptyList(),
     val expandedId: String? = null,
     val replayPct: Int = 0,
-)
+    /** When set, the recorder shows only this aircraft's transmissions. */
+    val filterCallsign: String? = null,
+) {
+    val visible: List<Transmission>
+        get() = filterCallsign?.let { wanted ->
+            transmissions.filter { it.callsign?.equals(wanted, ignoreCase = true) == true }
+        } ?: transmissions
+
+    /** Callsigns present in the log, for the recorder's filter row. */
+    val callsigns: List<String>
+        get() = transmissions.mapNotNull { it.callsign }.distinct().take(8)
+}
 
 data class AlertsUiState(
     val rules: List<AlertRule> = emptyList(),
@@ -99,6 +114,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val prefs = container.prefs
     private val audioBuffer = container.audioBuffer
     private val dsp = container.dsp
+    private val notifier = container.notifier
 
     private var controller: MediaController? = null
     private var lastError: String? = null
@@ -191,6 +207,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         _location.value = locationProvider.lastKnownLocation()
         connectController()
         pushDspSettings()
+        publishTracked()
 
         viewModelScope.launch {
             while (true) {
@@ -247,7 +264,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun play(feed: Feed) {
         val c = controller ?: return
         lastError = null
-        audioBuffer.reset()
+        // Each feed keeps its own rolling window, so tuning away and back doesn't lose it.
+        audioBuffer.switchTo(feed.id)
         val item = MediaItem.Builder()
             .setMediaId(feed.id)
             .setMediaMetadata(
@@ -451,43 +469,66 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val next = _alerts.value.rules.map { if (it.id == id) it.copy(on = !it.on) else it }
         prefs.saveRules(next)
         _alerts.update { it.copy(rules = next) }
+        publishTracked()
+    }
+
+    /** Mirrors the armed aircraft rules into radar state so the scope can pin them. */
+    private fun publishTracked() {
+        val tracked = _alerts.value.rules
+            .filter { it.on && it.tracksAircraft }
+            .flatMap { it.terms }
+            .map { it.trim().uppercase() }
+            .filter { it.isNotEmpty() }
+            .toSet()
+        _radar.update { it.copy(tracked = tracked) }
     }
 
     fun armRule(text: String) {
-        val cleaned = text.trim().uppercase()
-        if (cleaned.isEmpty()) return
+        val typed = text.trim().uppercase()
+        if (typed.isEmpty()) return
         val type = _alerts.value.ruleType
+
+        // A flight is stored as one ICAO callsign however it was typed — "UA328", "United 328"
+        // and "UAL328" all become UAL328, which is what the transcriber resolves to.
+        val term = if (type == RuleType.FLIGHT) normalizeFlightNumber(typed) ?: typed else typed
+
         val rule = AlertRule(
             id = "user:" + UUID.randomUUID(),
             type = type,
-            name = "${typeLabel(type)} · $cleaned",
-            detail = "All active feeds · sound + banner",
+            name = "${typeLabel(type)} · $term",
+            detail = when (type) {
+                RuleType.FLIGHT -> "Tracks this flight on every feed and pins it on the scope"
+                RuleType.TAIL -> "Notify whenever this aircraft is addressed"
+                else -> "All active feeds · sound + banner"
+            },
             on = true,
             accent = when (type) {
                 RuleType.KEYWORD -> RuleAccent.MAGENTA
+                RuleType.FLIGHT -> RuleAccent.AMBER
                 RuleType.TAIL -> RuleAccent.CYAN
                 RuleType.FEED -> RuleAccent.GREEN
             },
-            terms = listOf(cleaned),
+            terms = listOf(term),
         )
         val next = _alerts.value.rules + rule
         prefs.saveRules(next)
         _alerts.update { it.copy(rules = next) }
+        publishTracked()
     }
 
     fun removeRule(id: String) {
         val next = _alerts.value.rules.filterNot { it.id == id }
         prefs.saveRules(next)
         _alerts.update { it.copy(rules = next) }
+        publishTracked()
     }
 
+    /** Fires the banner and the notification together, so both paths can be verified at once. */
     fun testFire() {
-        fireAlert(
-            ActiveAlert(
-                title = "PRIORITY · MEDFLIGHT 1",
-                body = "KBOS TWR — air ambulance declared priority, patient on board",
-            ),
-        )
+        val title = "PRIORITY · MEDFLIGHT 1"
+        val body = "KBOS TWR — air ambulance declared priority, patient on board"
+        fireAlert(ActiveAlert(title = title, body = body))
+        notifier.post(title, body)
     }
 
     fun dismissAlert() {
@@ -496,20 +537,20 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun matchAlerts(entry: Transmission) {
-        val rule = _alerts.value.rules.firstOrNull { it.matches(entry.raw) }
-        if (rule != null) {
-            fireAlert(
-                ActiveAlert(
-                    title = if (entry.priority == Priority.EMERGENCY) {
-                        "EMERGENCY · ${entry.callsign ?: rule.name}"
-                    } else {
-                        "PRIORITY · ${entry.callsign ?: rule.name}"
-                    },
-                    body = "${entry.feedLabel} — ${entry.plainEnglish ?: entry.raw}",
-                    ruleId = rule.id,
-                ),
-            )
+        // The resolved callsign matters as much as the words: controllers say "United three
+        // twenty eight", never "UAL328", so a flight rule can only fire on the resolution.
+        val rule = _alerts.value.rules.firstOrNull { it.matches(entry.raw, entry.callsign) }
+            ?: return
+        val title = if (entry.priority == Priority.EMERGENCY) {
+            "EMERGENCY · ${entry.callsign ?: rule.name}"
+        } else {
+            "PRIORITY · ${entry.callsign ?: rule.name}"
         }
+        val body = "${entry.feedLabel} — ${entry.plainEnglish ?: entry.raw}"
+        fireAlert(ActiveAlert(title = title, body = body, ruleId = rule.id))
+        // Arming a rule for your own flight is only useful if it reaches you while you are
+        // doing something else, so it goes to the shade as well as the in-app banner.
+        notifier.post(title, body)
     }
 
     private fun fireAlert(alert: ActiveAlert) {
@@ -525,6 +566,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun expandTransmission(id: String?) {
         _history.update { it.copy(expandedId = if (it.expandedId == id) null else id, replayPct = 0) }
+    }
+
+    /** Narrows the recorder to one aircraft; passing the active callsign again clears it. */
+    fun filterHistory(callsign: String?) {
+        _history.update {
+            val next = if (it.filterCallsign.equals(callsign, ignoreCase = true)) null else callsign
+            it.copy(filterCallsign = next, expandedId = null, replayPct = 0)
+        }
     }
 
     fun replay(id: String) {
@@ -652,6 +701,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
 private fun typeLabel(type: RuleType): String = when (type) {
     RuleType.KEYWORD -> "KEYWORD"
+    RuleType.FLIGHT -> "FLIGHT"
     RuleType.TAIL -> "TAIL #"
     RuleType.FEED -> "FEED"
 }
