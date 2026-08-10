@@ -235,15 +235,27 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private var replayJob: Job? = null
     private var knownHexes = emptySet<String>()
 
+    /** Feeds already tried for the current tune, so failover can't loop between dead mounts. */
+    private val triedFeedIds = LinkedHashSet<String>()
+    private var allSourcesOffline = false
+
     private val playerListener = object : Player.Listener {
         override fun onEvents(player: Player, events: Player.Events) = pushState()
 
         override fun onPlayerError(error: PlaybackException) {
+            // A dead mount is the normal failure here, not an exception: LiveATC feeds are run by
+            // volunteers and go offline for months. Try the airport's other feeds before saying so.
+            if (error.errorCode in OFFLINE_ERRORS && attemptFailover()) return
+
             lastError = when (error.errorCode) {
                 // LiveATC/Broadcastify return 404 when a feed's source is offline.
                 PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS,
                 PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND,
-                -> "Feed offline — the source isn't broadcasting right now"
+                -> if (allSourcesOffline) {
+                    "Every source for this airport is offline — nothing to fall back to"
+                } else {
+                    "Feed offline — the source isn't broadcasting right now"
+                }
                 PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED,
                 PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT,
                 -> "No connection — check your internet"
@@ -313,6 +325,35 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun play(feed: Feed) {
+        triedFeedIds.clear()
+        triedFeedIds.add(feed.id)
+        allSourcesOffline = false
+        playInternal(feed)
+    }
+
+    /**
+     * Falls forward to another feed at the same airport when the tuned one is offline.
+     *
+     * Charlotte is the case this exists for: three separate LiveATC mounts, all dead, and the app
+     * used to show a cryptic error on the first one rather than trying the other two and then
+     * saying plainly that the field is dark.
+     */
+    private fun attemptFailover(): Boolean {
+        val current = _playback.value.feed ?: return false
+        val next = repository.allFeeds.value.firstOrNull {
+            it.displayCode == current.displayCode && it.id !in triedFeedIds
+        }
+        if (next == null) {
+            // Every source for this airport has been tried; now the error is worth reporting.
+            allSourcesOffline = triedFeedIds.size > 1
+            return false
+        }
+        triedFeedIds.add(next.id)
+        playInternal(next)
+        return true
+    }
+
+    private fun playInternal(feed: Feed) {
         val c = controller ?: return
         lastError = null
         // Each feed keeps its own rolling window, so tuning away and back doesn't lose it.
@@ -943,6 +984,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         const val MIN_CLIP_BYTES = 800
         const val MAX_HISTORY = 200
         const val ANOMALY_NOTABLE = 0.55f
+
+        /** Errors that mean "this mount is dead", as opposed to "your network is dead". */
+        val OFFLINE_ERRORS = setOf(
+            PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS,
+            PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND,
+            PlaybackException.ERROR_CODE_IO_INVALID_HTTP_CONTENT_TYPE,
+        )
     }
 }
 

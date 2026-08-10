@@ -95,7 +95,9 @@
       "region": "United States",
       "lat": 35.214,
       "lon": -80.9431,
-      "description": "Charlotte Douglas Intl — Tower"
+      "description": "Charlotte Douglas Intl — Tower",
+      "code": "KCLT",
+      "frequency": "118.10"
     },
     {
       "id": "liveatc:kclt1",
@@ -107,7 +109,9 @@
       "region": "United States",
       "lat": 35.214,
       "lon": -80.9431,
-      "description": "Charlotte Douglas Intl — Delivery/Ground/Tower"
+      "description": "Charlotte Douglas Intl — Delivery/Ground/Tower",
+      "code": "KCLT",
+      "frequency": "121.90"
     },
     {
       "id": "liveatc:kclt2",
@@ -119,7 +123,9 @@
       "region": "United States",
       "lat": 35.214,
       "lon": -80.9431,
-      "description": "Charlotte Douglas Intl — Approach/Departure"
+      "description": "Charlotte Douglas Intl — Approach/Departure",
+      "code": "KCLT",
+      "frequency": "124.00"
     },
     {
       "id": "liveatc:kcle",

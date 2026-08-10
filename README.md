@@ -42,6 +42,24 @@ Two rules run through the whole thing: **all motion stops when the audio is paus
 keeps sweeping while nothing is playing is lying about being live — and **night mode is a second
 colour scheme**, not a filter, so red-light mode stays legible instead of muddy.
 
+### When a feed is dead
+
+LiveATC mounts are run by volunteers with a receiver in their attic, and they go offline — sometimes
+for months. Charlotte is the standing example: all three of its mounts are dark.
+
+The app now **falls forward** rather than failing. On an offline-type error it tries the airport's
+other feeds in turn, and only reports a problem once every source for that field has been tried —
+at which point it says so plainly instead of showing a stream error. The grouping is by the feed's
+4-character code, so it needs no extra data and picks up any feed you add yourself.
+
+Worth knowing why a dead airport can't simply be routed elsewhere: **airband is line-of-sight VHF**.
+Hearing Charlotte tower requires a receiver physically near Charlotte, and only two networks
+aggregate those volunteers at any scale — LiveATC and Broadcastify. There is no third source to fall
+back to, and general-purpose WebSDR receivers don't help: the common KiwiSDR tops out at 30 MHz and
+can't tune the 118-137 MHz airband at all. If a field has no working feed, the remaining options are
+a Broadcastify feed for the same airport or your own radio — the frequencies are in the catalog for
+exactly that reason.
+
 ### Where the scope's data comes from
 
 Two things on the navigation display are inferred rather than looked up, because the data isn't
