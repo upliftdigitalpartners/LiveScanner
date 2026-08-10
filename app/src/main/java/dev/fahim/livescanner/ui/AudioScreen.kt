@@ -71,6 +71,11 @@ private val BAR_SEEDS = FloatArray(SCOPE_BARS) { index ->
 fun AudioScreen(vm: MainViewModel, onBack: () -> Unit) {
     val audio by vm.audio.collectAsStateWithLifecycle()
     val playback by vm.playback.collectAsStateWithLifecycle()
+    val night by vm.night.collectAsStateWithLifecycle()
+    // Metering is collected here rather than in the panel state — it moves at 20 Hz, and only the
+    // scope below cares. Everything else on this screen changes when you touch a control.
+    val level by vm.signalLevel.collectAsStateWithLifecycle()
+    val gateOpen by vm.gateOpen.collectAsStateWithLifecycle()
     val p = FlightDeck
 
     Column(
@@ -85,8 +90,8 @@ fun AudioScreen(vm: MainViewModel, onBack: () -> Unit) {
             onBack = onBack,
         ) {
             FdChip(
-                label = if (audio.night) "NIGHT" else "DAY",
-                accent = if (audio.night) FdAccent.RED else FdAccent.NEUTRAL,
+                label = if (night) "NIGHT" else "DAY",
+                accent = if (night) FdAccent.RED else FdAccent.NEUTRAL,
                 onClick = vm::toggleNight,
             )
         }
@@ -100,9 +105,9 @@ fun AudioScreen(vm: MainViewModel, onBack: () -> Unit) {
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             SquelchScope(
-                level = audio.level,
+                level = level,
                 squelch = audio.squelch,
-                gateOpen = audio.gateOpen,
+                gateOpen = gateOpen,
                 playing = playback.isPlaying,
             )
 

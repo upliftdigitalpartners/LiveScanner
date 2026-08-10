@@ -114,6 +114,8 @@ class FlightDeckDsp : BaseAudioProcessor() {
     /** Reused sample scratch — the audio path must not allocate per buffer. */
     private var scratch = ShortArray(0)
 
+    private var lastPublishMs = 0L
+
     override fun onConfigure(inputAudioFormat: AudioProcessor.AudioFormat): AudioProcessor.AudioFormat {
         if (inputAudioFormat.encoding != androidx.media3.common.C.ENCODING_PCM_16BIT) {
             throw AudioProcessor.UnhandledAudioFormatException(inputAudioFormat)
@@ -204,11 +206,17 @@ class FlightDeckDsp : BaseAudioProcessor() {
         inputBuffer.position(inputBuffer.limit())
         out.flip()
 
+        // Publish metering at 20 Hz, not once per buffer. These are StateFlows the UI collects, and
+        // at buffer rate they drive far more recomposition than a moving meter can even show.
         if (frames > 0) {
-            val rms = sqrt(sumSquares / frames)
-            // ATC audio sits low in the scale; scale so normal speech lands mid-meter.
-            _level.value = (rms * 4.0).coerceIn(0.0, 1.0).toFloat()
-            _gateOpen.value = open
+            val now = System.currentTimeMillis()
+            if (now - lastPublishMs >= PUBLISH_INTERVAL_MS) {
+                lastPublishMs = now
+                val rms = sqrt(sumSquares / frames)
+                // ATC audio sits low in the scale; scale so normal speech lands mid-meter.
+                _level.value = (rms * 4.0).coerceIn(0.0, 1.0).toFloat()
+                _gateOpen.value = open
+            }
         }
     }
 
@@ -222,5 +230,9 @@ class FlightDeckDsp : BaseAudioProcessor() {
 
     override fun onReset() {
         onFlush()
+    }
+
+    private companion object {
+        const val PUBLISH_INTERVAL_MS = 50L // 20 Hz
     }
 }

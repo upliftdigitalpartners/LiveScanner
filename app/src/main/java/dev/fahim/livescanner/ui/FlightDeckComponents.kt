@@ -1,13 +1,9 @@
 package dev.fahim.livescanner.ui
 
-import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateDpAsState
-import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -28,12 +24,16 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -264,30 +264,37 @@ fun VuBars(
     color: Color? = null,
 ) {
     val tint = color ?: FlightDeck.green
-    val transition = rememberInfiniteTransition(label = "vu")
-    Row(
-        modifier.alpha(if (playing) 1f else 0.25f),
-        horizontalArrangement = Arrangement.spacedBy(2.dp),
-        verticalAlignment = Alignment.Bottom,
-    ) {
-        repeat(bars) { index ->
-            // Per-bar durations 0.30-0.60s, alternating direction so the meter never marches.
-            val duration = 300 + (index * 37) % 300
-            val scale by transition.animateFloat(
-                initialValue = if (index % 2 == 0) 0.15f else 1f,
-                targetValue = if (index % 2 == 0) 1f else 0.15f,
-                animationSpec = infiniteRepeatable(
-                    animation = tween(duration, easing = LinearEasing),
-                    repeatMode = RepeatMode.Reverse,
-                ),
-                label = "bar$index",
-            )
-            val height = if (playing) barHeight * scale else barHeight * 0.15f
-            Box(
-                Modifier
-                    .width(barWidth)
-                    .height(height)
-                    .background(tint),
+
+    // One Canvas driven by the frame clock, not one animation per bar. The clock is read inside the
+    // draw lambda, so a frame invalidates drawing only — it never recomposes anything.
+    var frameMs by remember { mutableLongStateOf(0L) }
+    LaunchedEffect(playing) {
+        if (!playing) return@LaunchedEffect
+        while (true) withFrameNanos { frameMs = it / 1_000_000L }
+    }
+
+    Canvas(modifier.height(barHeight)) {
+        val gap = 2.dp.toPx()
+        val w = barWidth.toPx()
+        val full = size.height
+        for (index in 0 until bars) {
+            val x = index * (w + gap)
+            if (x + w > size.width) break
+            // Per-bar periods of 300-600 ms, alternating phase so the meter never marches in step.
+            val fraction = if (playing) {
+                val period = 300 + (index * 37) % 300
+                val phase = (frameMs % (period * 2L)) / period.toFloat()
+                val triangle = if (phase <= 1f) phase else 2f - phase
+                val flipped = if (index % 2 == 0) triangle else 1f - triangle
+                0.15f + 0.85f * flipped
+            } else {
+                0.15f
+            }
+            val h = full * fraction
+            drawRect(
+                color = tint.copy(alpha = if (playing) 1f else 0.25f),
+                topLeft = Offset(x, full - h),
+                size = Size(w, h),
             )
         }
     }
@@ -395,23 +402,25 @@ fun TypewriterText(
 @Composable
 fun StatusDot(live: Boolean, modifier: Modifier = Modifier) {
     val p = FlightDeck
-    val transition = rememberInfiniteTransition(label = "dot")
-    val pulse by transition.animateFloat(
-        initialValue = 0.35f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(1_300, easing = LinearEasing),
-            repeatMode = RepeatMode.Reverse,
-        ),
-        label = "pulse",
-    )
-    Box(
-        modifier
-            .size(9.dp)
-            .clip(CircleShape)
-            .alpha(if (live) pulse else 1f)
-            .background(if (live) p.green else p.amber),
-    )
+    var frameMs by remember { mutableLongStateOf(0L) }
+    LaunchedEffect(live) {
+        if (!live) return@LaunchedEffect
+        while (true) withFrameNanos { frameMs = it / 1_000_000L }
+    }
+    Canvas(modifier.size(9.dp)) {
+        // Alpha is computed in the draw pass, so the pulse never recomposes its parent row.
+        val alpha = if (live) {
+            val phase = (frameMs % 2_600L) / 1_300f
+            val triangle = if (phase <= 1f) phase else 2f - phase
+            0.35f + 0.65f * triangle
+        } else {
+            1f
+        }
+        drawCircle(
+            color = (if (live) p.green else p.amber).copy(alpha = alpha),
+            radius = size.minDimension / 2f,
+        )
+    }
 }
 
 /** The red priority banner: drops in from -14px, auto-hides, tap or DISMISS to clear. */

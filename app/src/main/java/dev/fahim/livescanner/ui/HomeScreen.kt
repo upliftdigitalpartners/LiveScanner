@@ -70,7 +70,6 @@ fun HomeScreen(
     val query by vm.query.collectAsStateWithLifecycle()
     val tab by vm.tab.collectAsStateWithLifecycle()
     val alerts by vm.alerts.collectAsStateWithLifecycle()
-    val utcTick by vm.utcTick.collectAsStateWithLifecycle()
 
     val requestLocation = rememberLocationPermissionLauncher { granted ->
         if (granted) vm.refreshLocation()
@@ -88,7 +87,9 @@ fun HomeScreen(
             .background(p.bg)
             .statusBarsPadding(),
     ) {
-        Header(utcTick)
+        // The clock flow is collected inside Header, not here — reading it at this level
+        // recomposed the whole comm panel, feed list included, once a second.
+        Header(vm.utcTick)
 
         Row(
             Modifier
@@ -191,8 +192,9 @@ fun HomeScreen(
 }
 
 @Composable
-private fun Header(utcMillis: Long) {
+private fun Header(clock: kotlinx.coroutines.flow.StateFlow<Long>) {
     val p = FlightDeck
+    val utcMillis by clock.collectAsStateWithLifecycle()
     Row(
         Modifier
             .fillMaxWidth()

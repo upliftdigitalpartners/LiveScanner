@@ -5,6 +5,7 @@ import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -35,6 +36,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -360,19 +363,24 @@ private fun Waveform(
         label = "waveScale",
     )
     val playedBars = if (expanded) WAVE_BARS * replayPct.coerceIn(0, 100) / 100 else 0
+    val played = p.green
+    val idle = p.stroke
 
-    Row(
-        modifier.height(WAVE_BAR_HEIGHT),
-        horizontalArrangement = Arrangement.spacedBy(1.dp),
-        verticalAlignment = Alignment.Bottom,
-    ) {
-        repeat(WAVE_BARS) { index ->
+    // One Canvas rather than 34 Boxes: a list of these was contributing a couple of hundred
+    // layout nodes to the recorder's scroll for no benefit.
+    Canvas(modifier.height(WAVE_BAR_HEIGHT)) {
+        val gap = 1.dp.toPx()
+        val barWidth = WAVE_BAR_WIDTH.toPx()
+        val full = size.height
+        for (index in 0 until WAVE_BARS) {
+            val x = index * (barWidth + gap)
+            if (x + barWidth > size.width) break
             val amplitude = amplitudes.getOrElse(index) { 0.35f }.coerceIn(0.08f, 1f)
-            Box(
-                Modifier
-                    .width(WAVE_BAR_WIDTH)
-                    .height(WAVE_BAR_HEIGHT * amplitude * scale)
-                    .background(if (index < playedBars) p.green else p.stroke),
+            val h = full * amplitude * scale
+            drawRect(
+                color = if (index < playedBars) played else idle,
+                topLeft = Offset(x, full - h),
+                size = Size(barWidth, h),
             )
         }
     }

@@ -94,6 +94,11 @@ data class AlertsUiState(
     val active: ActiveAlert? = null,
 )
 
+/**
+ * Panel settings only. Signal level, gate state and night mode are deliberately *not* here:
+ * level updates at audio-buffer rate, and anything that shares a state object with it recomposes
+ * at that rate too — which is how the whole app ended up redrawing tens of times a second.
+ */
 data class AudioUiState(
     val gain: Int = 50,
     val squelch: Int = 38,
@@ -101,9 +106,6 @@ data class AudioUiState(
     val noiseGate: Boolean = true,
     val trimSilence: Boolean = true,
     val duckForNav: Boolean = false,
-    val night: Boolean = false,
-    val level: Float = 0f,
-    val gateOpen: Boolean = false,
 )
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
@@ -149,10 +151,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             noiseGate = prefs.noiseGate,
             trimSilence = prefs.trimSilence,
             duckForNav = prefs.duckForNav,
-            night = prefs.nightMode,
         ),
     )
     val audio: StateFlow<AudioUiState> = _audio.asStateFlow()
+
+    /** Read only by the app shell, so a theme swap is the one thing that redraws everything. */
+    private val _night = MutableStateFlow(prefs.nightMode)
+    val night: StateFlow<Boolean> = _night.asStateFlow()
+
+    /** Straight off the DSP, which rate-limits its own publishing. Read only by the audio scope. */
+    val signalLevel: StateFlow<Float> = dsp.level
+    val gateOpen: StateFlow<Boolean> = dsp.gateOpen
 
     private val _tab = MutableStateFlow(FeedTab.NRST)
     val tab: StateFlow<FeedTab> = _tab.asStateFlow()
@@ -214,12 +223,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 _utcTick.value = System.currentTimeMillis()
                 delay(1_000)
             }
-        }
-        viewModelScope.launch {
-            dsp.level.collect { lvl -> _audio.update { it.copy(level = lvl) } }
-        }
-        viewModelScope.launch {
-            dsp.gateOpen.collect { open -> _audio.update { it.copy(gateOpen = open) } }
         }
     }
 
@@ -346,10 +349,36 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         _radar.update { it.copy(followOn = next) }
     }
 
+    /**
+     * The inputs that actually decide what the live loops should be doing. Player events fire
+     * constantly during streaming, and restarting the ADS-B poll on each one meant a 5-second
+     * fetch was cancelled before it could ever finish — the scope looked frozen and the network
+     * churned. Restart only when one of these changes.
+     */
+    private data class LiveKey(
+        val feedId: String?,
+        val playing: Boolean,
+        val rangeNm: Int,
+        val captions: Boolean,
+        val hasGroqKey: Boolean,
+    )
+
+    private var liveKey: LiveKey? = null
+
     /** (Re)starts the ADS-B poll and transcription loops for the feed that is currently playing. */
     private fun restartLiveLoops() {
         val feed = _playback.value.feed
         val playing = _playback.value.isPlaying
+
+        val key = LiveKey(
+            feedId = feed?.id,
+            playing = playing,
+            rangeNm = _radar.value.rangeNm,
+            captions = _radar.value.captionsOn,
+            hasGroqKey = repository.groqApiKey() != null,
+        )
+        if (key == liveKey) return
+        liveKey = key
 
         adsbJob?.cancel()
         if (feed != null && feed.lat != null && feed.lon != null) {
@@ -645,9 +674,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun toggleNight() {
-        val next = !_audio.value.night
+        val next = !_night.value
         prefs.nightMode = next
-        _audio.update { it.copy(night = next) }
+        _night.value = next
     }
 
     private fun pushDspSettings() {

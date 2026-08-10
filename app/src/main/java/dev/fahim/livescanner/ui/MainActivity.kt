@@ -46,8 +46,10 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         setContent {
             val vm: MainViewModel = viewModel()
-            val audio by vm.audio.collectAsStateWithLifecycle()
-            LiveScannerTheme(night = audio.night) {
+            // Only `night` is read here. Reading the whole audio state at the root meant every
+            // signal-level sample recomposed the entire app.
+            val night by vm.night.collectAsStateWithLifecycle()
+            LiveScannerTheme(night = night) {
                 AppRoot(vm)
             }
         }

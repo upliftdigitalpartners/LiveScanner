@@ -66,6 +66,12 @@ private const val SWEEP_PERIOD_SEC = 4.0
 private val RANGES = listOf(10, 20, 40)
 private val HEADING_TICKS = listOf("33", "34", "35", "36", "01", "02", "03", "04", "05")
 
+/** Text laid out once per ADS-B update rather than once per frame. */
+private class TargetLabels(
+    val callsign: androidx.compose.ui.text.TextLayoutResult?,
+    val tag: androidx.compose.ui.text.TextLayoutResult?,
+)
+
 /**
  * The navigation display: a scope centred on the airport you are listening to, with the traffic
  * ADS-B can see and the AI decode of what the tower just said.
@@ -242,11 +248,46 @@ private fun Scope(
         while (true) withFrameNanos { nowNanos = it }
     }
 
-    val tagStyle = TextStyle(
-        fontFamily = B612Mono,
-        fontSize = FdType.dataTag,
-        color = p.textDim,
-    )
+    val tagStyle = remember(p.textDim) {
+        TextStyle(fontFamily = B612Mono, fontSize = FdType.dataTag, color = p.textDim)
+    }
+
+    // Everything below is measured or allocated once per data change, never per frame. Laying out
+    // two text labels per contact inside the draw loop was the single most expensive thing the
+    // scope did — at 20 contacts that was 40 text layouts every frame.
+    val labels = remember(radar.aircraft, tagStyle) {
+        radar.aircraft.associate { ac ->
+            val callsign = ac.callsign?.trim()?.takeIf { it.isNotEmpty() }
+            val fl = ac.altitudeFt?.let { (it / 100).toString().padStart(3, '0') } ?: "GND"
+            val rate = ac.verticalRateFpm ?: 0
+            val trend = when {
+                rate > 250 -> "↑"
+                rate < -250 -> "↓"
+                else -> "·"
+            }
+            ac.hex to TargetLabels(
+                callsign = callsign?.let { measurer.measure(it, tagStyle) },
+                tag = measurer.measure("$fl$trend ${(ac.groundSpeedKt / 10).roundToInt()}", tagStyle),
+            )
+        }
+    }
+    val rangeLabels = remember(radar.rangeNm, tagStyle) {
+        listOf(1.0f, 0.75f, 0.5f).map { frac ->
+            frac to measurer.measure((radar.rangeNm * frac).roundToInt().toString(), tagStyle)
+        }
+    }
+    val trkLabel = remember(tagStyle) { measurer.measure("TRK", tagStyle) }
+
+    // A sweep gradient builds a shader; rebuilding one every frame is pure waste. With no explicit
+    // centre it uses the draw area's centre, which is where the scope is anyway.
+    val sweepBrush = remember(p.green) {
+        Brush.sweepGradient(
+            0f to p.green.copy(alpha = 0.28f),
+            (80f / 360f) to Color.Transparent,
+            1f to Color.Transparent,
+        )
+    }
+    val diamond = remember { Path() }
 
     Canvas(
         Modifier
@@ -295,28 +336,15 @@ private fun Scope(
         drawLine(p.cyan.copy(alpha = 0.12f), Offset(cx - scopeR, cy), Offset(cx + scopeR, cy))
 
         // Range labels at full, three-quarter and half range.
-        listOf(1.0f to rangeNm, 0.75f to rangeNm * 0.75, 0.5f to rangeNm * 0.5).forEach { (frac, value) ->
-            drawText(
-                measurer,
-                value.roundToInt().toString(),
-                topLeft = Offset(cx + 6f, cy - scopeR * frac),
-                style = tagStyle.copy(color = p.cyan.copy(alpha = 0.45f)),
-            )
+        val rangeTint = p.cyan.copy(alpha = 0.45f)
+        rangeLabels.forEach { (frac, layout) ->
+            drawText(layout, color = rangeTint, topLeft = Offset(cx + 6f, cy - scopeR * frac))
         }
 
         // Sweep: a conic wedge, one rotation per 4 s, frozen when the audio is paused.
         val sweepDeg = if (playing) ((seconds / SWEEP_PERIOD_SEC) * 360.0 % 360.0).toFloat() else 0f
         rotate(degrees = sweepDeg, pivot = Offset(cx, cy)) {
-            drawCircle(
-                brush = Brush.sweepGradient(
-                    0f to p.green.copy(alpha = 0.28f),
-                    (80f / 360f) to Color.Transparent,
-                    1f to Color.Transparent,
-                    center = Offset(cx, cy),
-                ),
-                radius = scopeR,
-                center = Offset(cx, cy),
-            )
+            drawCircle(brush = sweepBrush, radius = scopeR, center = Offset(cx, cy))
         }
 
         // Ownship: a 10px square outline at the field.
@@ -362,39 +390,31 @@ private fun Scope(
                 )
             }
 
-            // 9px diamond.
+            // 9px diamond, drawn through one reused Path so the frame loop allocates nothing.
             val half = 12.dp.toPx() / 2f
-            drawPath(
-                Path().apply {
-                    moveTo(pos.x, pos.y - half)
-                    lineTo(pos.x + half, pos.y)
-                    lineTo(pos.x, pos.y + half)
-                    lineTo(pos.x - half, pos.y)
-                    close()
-                },
-                color = tint,
-            )
+            diamond.rewind()
+            diamond.moveTo(pos.x, pos.y - half)
+            diamond.lineTo(pos.x + half, pos.y)
+            diamond.lineTo(pos.x, pos.y + half)
+            diamond.lineTo(pos.x - half, pos.y)
+            diamond.close()
+            drawPath(diamond, color = tint)
 
-            // Data tag: callsign over flight level, trend arrow and speed.
+            // Data tag: callsign over flight level, trend arrow and speed — pre-measured.
             val callsign = ac.callsign?.trim()
-            if (!callsign.isNullOrEmpty()) {
+            val label = labels[ac.hex]
+            label?.callsign?.let {
                 drawText(
-                    measurer,
-                    callsign,
+                    it,
+                    color = tint.copy(alpha = 0.95f),
                     topLeft = Offset(pos.x + half + 4f, pos.y - half - 2f),
-                    style = tagStyle.copy(color = tint.copy(alpha = 0.95f)),
                 )
-                val fl = ac.altitudeFt?.let { (it / 100).toString().padStart(3, '0') } ?: "GND"
-                val trend = when {
-                    (ac.verticalRateFpm ?: 0) > 250 -> "↑"
-                    (ac.verticalRateFpm ?: 0) < -250 -> "↓"
-                    else -> "·"
-                }
+            }
+            label?.tag?.let {
                 drawText(
-                    measurer,
-                    "$fl$trend ${(ac.groundSpeedKt / 10).roundToInt()}",
+                    it,
+                    color = tint.copy(alpha = 0.7f),
                     topLeft = Offset(pos.x + half + 4f, pos.y + 1f),
-                    style = tagStyle.copy(color = tint.copy(alpha = 0.7f)),
                 )
             }
 
@@ -442,10 +462,9 @@ private fun Scope(
                     style = Stroke(width = 2.dp.toPx()),
                 )
                 drawText(
-                    measurer,
-                    "TRK",
+                    trkLabel,
+                    color = p.amber,
                     topLeft = Offset(pos.x - half, pos.y + half * 2.8f),
-                    style = tagStyle.copy(color = p.amber),
                 )
             }
 
