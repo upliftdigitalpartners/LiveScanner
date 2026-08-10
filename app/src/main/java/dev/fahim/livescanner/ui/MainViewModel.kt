@@ -381,7 +381,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         liveKey = key
 
         adsbJob?.cancel()
-        if (feed != null && feed.lat != null && feed.lon != null) {
+        if (feed?.lat == null || feed.lon == null) {
+            _radar.update { it.copy(aircraft = emptyList(), trails = emptyMap(), selectedHex = null) }
+        } else if (!playing) {
+            // Paused means the scope holds its last picture rather than stepping to new fixes —
+            // the frame clock is stopped too, so nothing on it moves. The feed is still tuned, so
+            // the contacts stay on screen; they just stop refreshing until playback resumes.
+        } else {
             val center = LatLng(feed.lat, feed.lon)
             val range = _radar.value.rangeNm
             adsbJob = viewModelScope.launch {
@@ -402,8 +408,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     delay(ADSB_POLL_MS)
                 }
             }
-        } else {
-            _radar.update { it.copy(aircraft = emptyList(), trails = emptyMap(), selectedHex = null) }
         }
 
         transcribeJob?.cancel()

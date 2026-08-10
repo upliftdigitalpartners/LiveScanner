@@ -63,6 +63,7 @@ import kotlin.math.roundToInt
 import kotlin.math.sin
 
 private const val SWEEP_PERIOD_SEC = 4.0
+private const val MAX_EXTRAPOLATION_SEC = 15.0
 private val RANGES = listOf(10, 20, 40)
 private val HEADING_TICKS = listOf("33", "34", "35", "36", "01", "02", "03", "04", "05")
 
@@ -297,10 +298,13 @@ private fun Scope(
                     val cx = size.width / 2f
                     val cy = size.height / 2f
                     val scopeR = min(size.width, size.height) / 2f * 0.92f
+                    // Hit-test against where the targets are drawn right now, not their last fix.
+                    val tapNanos = System.nanoTime()
                     var best: Aircraft? = null
                     var bestD = with(density) { 30.dp.toPx() }
                     for (ac in radar.aircraft) {
-                        val pos = aircraftOffset(center, ac, cx, cy, scopeR, rangeNm) ?: continue
+                        val pos = aircraftOffset(center, ac, tapNanos, cx, cy, scopeR, rangeNm)
+                            ?: continue
                         val d = hypot(pos.x - tap.x, pos.y - tap.y)
                         if (d < bestD) {
                             bestD = d
@@ -357,7 +361,7 @@ private fun Scope(
         )
 
         val visible = radar.aircraft.mapNotNull { ac ->
-            aircraftOffset(center, ac, cx, cy, scopeR, rangeNm)?.let { ac to it }
+            aircraftOffset(center, ac, nowNanos, cx, cy, scopeR, rangeNm)?.let { ac to it }
         }
 
         // Trails, oldest faintest.
@@ -597,17 +601,34 @@ private fun latLngToOffset(
     return Offset(cx + (east / rangeNm * scopeR).toFloat(), cy - (north / rangeNm * scopeR).toFloat())
 }
 
-/** Screen position for an aircraft, or null when it is outside the selected range. */
+/**
+ * Screen position for an aircraft, dead-reckoned forward from its last fix; null when it is
+ * outside the selected range.
+ *
+ * ADS-B arrives every 5 seconds. Plotting those fixes raw makes traffic jump five times a minute,
+ * so each target is carried forward along its own track at its own groundspeed on every frame —
+ * the aircraft really is moving, and this is where it would be. A new fix corrects the estimate.
+ */
 private fun aircraftOffset(
     center: LatLng,
     ac: Aircraft,
+    nowNanos: Long,
     cx: Float,
     cy: Float,
     scopeR: Float,
     rangeNm: Double,
 ): Offset? {
-    val north = (ac.lat - center.lat) * 60.0
-    val east = (ac.lon - center.lon) * 60.0 * cos(Math.toRadians(center.lat))
+    var north = (ac.lat - center.lat) * 60.0
+    var east = (ac.lon - center.lon) * 60.0 * cos(Math.toRadians(center.lat))
+
+    if (ac.groundSpeedKt > 0 && nowNanos > ac.seenNanos) {
+        // Clamp so a fix that stopped updating can't send a target flying off the scope.
+        val dt = ((nowNanos - ac.seenNanos) / 1e9).coerceAtMost(MAX_EXTRAPOLATION_SEC)
+        val dnm = ac.groundSpeedKt / 3600.0 * dt
+        north += dnm * cos(Math.toRadians(ac.trackDeg))
+        east += dnm * sin(Math.toRadians(ac.trackDeg))
+    }
+
     if (hypot(north, east) > rangeNm) return null
     return Offset(cx + (east / rangeNm * scopeR).toFloat(), cy - (north / rangeNm * scopeR).toFloat())
 }
