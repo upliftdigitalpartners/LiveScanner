@@ -19,7 +19,9 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -70,6 +72,7 @@ fun HomeScreen(
     val query by vm.query.collectAsStateWithLifecycle()
     val tab by vm.tab.collectAsStateWithLifecycle()
     val alerts by vm.alerts.collectAsStateWithLifecycle()
+    val comm2FeedId by vm.comm2FeedId.collectAsStateWithLifecycle()
 
     val requestLocation = rememberLocationPermissionLauncher { granted ->
         if (granted) vm.refreshLocation()
@@ -116,6 +119,33 @@ fun HomeScreen(
             onRadar = { vm.goTo(Screen.RADAR) },
             onToggle = vm::togglePlayPause,
         )
+
+        // COMM 2 only appears once something is monitored on it.
+        comm2FeedId?.let { id ->
+            val monitored = allFeeds.firstOrNull { it.id == id }
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = FdDim.gutter)
+                    .padding(top = 6.dp)
+                    .clip(RoundedCornerShape(FdDim.radiusRow))
+                    .background(p.panelAlt)
+                    .border(1.dp, p.amberBorder, RoundedCornerShape(FdDim.radiusRow))
+                    .padding(FdDim.rowPadding),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                SectionLabel("COMM 2 · MONITOR", color = p.amber)
+                Spacer(Modifier.width(10.dp))
+                PanelText(
+                    monitored?.let { "${it.displayCode} ${facilityWord(it.name)}" } ?: "—",
+                    Modifier.weight(1f),
+                    color = p.text,
+                    size = FdType.control,
+                    maxLines = 1,
+                )
+                FdKey("✕", active = false, accent = FdAccent.NEUTRAL, onClick = vm::stopComm2)
+            }
+        }
 
         Spacer(Modifier.height(12.dp))
         SearchField(query, vm::setQuery)
@@ -175,8 +205,10 @@ fun HomeScreen(
                     FeedRow(
                         feed = feed,
                         isFavorite = feed.id in favorites,
+                        isComm2 = feed.id == comm2FeedId,
                         distanceNm = feed.distanceNmFrom(location),
                         onPlay = { vm.play(feed) },
+                        onComm2 = { vm.toggleComm2(feed) },
                         onToggleFavorite = { vm.toggleFavorite(feed.id) },
                     )
                 }
@@ -372,8 +404,10 @@ private fun SearchField(query: String, onQuery: (String) -> Unit) {
 private fun FeedRow(
     feed: Feed,
     isFavorite: Boolean,
+    isComm2: Boolean,
     distanceNm: Double?,
     onPlay: () -> Unit,
+    onComm2: () -> Unit,
     onToggleFavorite: () -> Unit,
 ) {
     val p = FlightDeck
@@ -381,9 +415,16 @@ private fun FeedRow(
         Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(FdDim.radiusRow))
-            .background(p.panel)
-            .border(1.dp, p.strokeDim, RoundedCornerShape(FdDim.radiusRow))
-            .clickable(onClick = onPlay)
+            .background(if (isComm2) p.panelAlt else p.panel)
+            .border(
+                1.dp,
+                if (isComm2) p.amberBorder else p.strokeDim,
+                RoundedCornerShape(FdDim.radiusRow),
+            )
+            // Tap tunes COMM 1; long-press puts the feed on COMM 2 underneath it.
+            .pointerInput(feed.id) {
+                detectTapGestures(onTap = { onPlay() }, onLongPress = { onComm2() })
+            }
             .padding(FdDim.rowPadding),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -415,6 +456,10 @@ private fun FeedRow(
                 size = FdType.control,
                 maxLines = 1,
             )
+        }
+        if (isComm2) {
+            PanelText("C2", color = p.amber, size = FdType.control, bold = true)
+            Spacer(Modifier.width(8.dp))
         }
         SignalStaircase(signalFor(distanceNm))
         Spacer(Modifier.width(10.dp))

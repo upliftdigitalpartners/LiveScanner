@@ -16,12 +16,13 @@ the tower while you drive past the airport, or tune the local PD on a road trip.
 - **Nearby** — sorts feeds by distance to your location (great on a road trip).
 - **Favorites**, **search**, background playback, lock-screen controls.
 - **Android Auto** — the same feed tree shows up in the car; tap to listen.
-- **Live radar** — listening to an airport? Swipe to **Radar** to watch live aircraft on a navigation-display scope (ADS-B via [adsb.lol](https://adsb.lol/), free, no key): altitude-coloured targets, lead vectors, fading trails, range keys, and tap any plane for details + a real photo of it ([planespotters](https://www.planespotters.net/)).
+- **Live radar** — listening to an airport? Swipe to **Radar** to watch live aircraft on a navigation-display scope (ADS-B via [adsb.lol](https://adsb.lol/), free, no key): altitude-coloured targets with altitude posts, lead vectors, fading trails, phosphor persistence as the sweep crosses them, a coastline underlay, pinch zoom, drag to re-centre, track-up mode, an inferred approach corridor, a side-profile strip showing the arrival stack, and tap any plane for details + a real photo of it ([planespotters](https://www.planespotters.net/)).
+- **COMM 2** — long-press any feed to monitor it quietly underneath the one you're listening to, the way a real radio stack lets you keep an ear on ground while you work tower.
 - **Flight recorder** — a rolling 30-minute buffer of the feed, split into transmissions you can re-read, replay and export as a clip. One buffer per feed, and they survive restarts.
 - **Track a flight** — arm a rule with a flight number and the app follows it: banner and notification whenever it's addressed, an amber `TRK` ring on the scope, and a one-tap filter in the recorder showing only that aircraft's calls.
 - **Alert rules** — keyword, flight, tail-number and feed watches (MAYDAY, GO AROUND, your own N-number) with a banner and a notification the moment one is heard.
 - **Audio panel** — comm-radio DSP: gain, squelch gate, EQ voicings, silence trimming, and a red-light **night mode**.
-- **AI layer** — toggle live **captions** (Groq Whisper), **plain-English** decoding, and **auto-follow** that spotlights the exact plane being talked to. Bring your own free [Groq](https://console.groq.com) key. Experimental.
+- **AI layer** — live **captions** (Groq Whisper) primed with the tuned airport's own runway and fix names, **plain-English** decoding, **auto-follow** that spotlights the plane being talked to, **anomaly surfacing** that flags the unusual transmission you had no rule for, word-level **tap-to-hear** in the transcript, and **ask the feed** a plain question about the last half hour. Bring your own free [Groq](https://console.groq.com) key. Experimental.
 
 ## Flight Deck
 
@@ -40,6 +41,22 @@ in `ui/theme/Color.kt`. Five screens sit on one horizontal filmstrip:
 Two rules run through the whole thing: **all motion stops when the audio is paused** — a scope that
 keeps sweeping while nothing is playing is lying about being live — and **night mode is a second
 colour scheme**, not a filter, so red-light mode stays legible instead of muddy.
+
+### Where the scope's data comes from
+
+Two things on the navigation display are inferred rather than looked up, because the data isn't
+bundled and couldn't be:
+
+**The approach corridor** is derived from the traffic itself. Precise runway thresholds aren't in
+the app, but aircraft on final announce the active runway by flying it — low, slowing, descending,
+all pointing the same way. The circular mean of their tracks is the approach heading, and it's only
+drawn when their spread is tight enough to mean something. That also makes it *live*: it follows a
+runway change instead of showing every runway the field has.
+
+**The coastline** is clipped from Natural Earth 1:10m data at build time by `tools/build_coastline.py`
+into `assets/coastline.json` — 31 of the 54 airports sit near enough to a shore to get one. Inland
+fields simply have no underlay. The Great Lakes aren't included: Natural Earth's coastline layer is
+ocean shoreline only, so Chicago, Cleveland, Detroit and Milwaukee currently draw bare.
 
 ### Hearing your flight number
 

@@ -8,6 +8,15 @@ import java.time.format.DateTimeFormatter
 private val LOCAL_CLOCK: DateTimeFormatter =
     DateTimeFormatter.ofPattern("HH:mm:ss").withZone(ZoneId.systemDefault())
 
+/**
+ * One transcribed word with its offset inside the clip, for word-level playback highlighting.
+ *
+ * Kept separate from GroqTranscriber's wire-format `Word`: that one mirrors Whisper's JSON
+ * (seconds as doubles) and can change with the API, this one is persisted alongside history.
+ */
+@Serializable
+data class TranscriptWord(val text: String, val startMs: Long, val endMs: Long)
+
 /** How loudly a transmission should read in the recorder list. */
 @Serializable
 enum class Priority { EMERGENCY, NOTABLE, ROUTINE }
@@ -32,6 +41,8 @@ data class Transmission(
     val bufferLength: Int = 0,
     /** 34 normalised amplitudes (0..1) — the collapsed/expanded waveform in the recorder card. */
     val waveform: List<Float> = emptyList(),
+    /** Word timings relative to the clip start; empty when Whisper returned no word array. */
+    val words: List<TranscriptWord> = emptyList(),
 ) {
     /** hh:mm:ss in the device's local time, as shown on the card's top line. */
     val clockLabel: String

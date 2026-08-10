@@ -9,6 +9,7 @@ import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.session.MediaController
+import androidx.compose.ui.geometry.Offset
 import androidx.media3.session.SessionToken
 import com.google.common.util.concurrent.MoreExecutors
 import dev.fahim.livescanner.LiveScannerApp
@@ -22,6 +23,7 @@ import dev.fahim.livescanner.data.Priority
 import dev.fahim.livescanner.data.RuleAccent
 import dev.fahim.livescanner.data.RuleType
 import dev.fahim.livescanner.data.Transmission
+import dev.fahim.livescanner.data.TranscriptWord
 import dev.fahim.livescanner.data.AdsbClient
 import dev.fahim.livescanner.data.normalizeFlightNumber
 import dev.fahim.livescanner.data.priorityFor
@@ -35,6 +37,11 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.util.UUID
+import kotlin.math.atan2
+import kotlin.math.cos
+import kotlin.math.hypot
+import kotlin.math.roundToInt
+import kotlin.math.sin
 
 /** The five pages of the horizontal filmstrip. */
 enum class Screen { HOME, RADAR, HISTORY, ALERTS, AUDIO }
@@ -54,7 +61,12 @@ data class PlaybackUiState(
 )
 
 data class RadarUiState(
-    val rangeNm: Int = 40,
+    /** Continuous, not stepped — pinch zooms it anywhere between 5 and 80 NM. */
+    val rangeNm: Float = 40f,
+    /** Scope origin when the user has dragged away from the field; null means centred on it. */
+    val centerOffsetNm: Offset = Offset.Zero,
+    /** Rotate the picture so the tuned airport's active approach points up. */
+    val trackUp: Boolean = false,
     val aircraft: List<Aircraft> = emptyList(),
     val trails: Map<String, List<LatLng>> = emptyMap(),
     val selectedHex: String? = null,
@@ -69,7 +81,25 @@ data class RadarUiState(
     /** Callsigns named by an armed flight/tail rule — pinned on the scope whether or not
      *  anyone is talking to them. */
     val tracked: Set<String> = emptySet(),
-)
+    /** Hex of the aircraft to ripple from when a transmission lands, cleared after the animation. */
+    val rippleHex: String? = null,
+    /** Bearing traffic is arriving on, inferred from inbound descending contacts. Null until known. */
+    val approachBearing: Float? = null,
+) {
+    /** Where the scope is looking: the field, offset by any drag the user has applied. */
+    fun centerFor(field: LatLng): LatLng = if (centerOffsetNm == Offset.Zero) {
+        field
+    } else {
+        LatLng(
+            lat = field.lat + centerOffsetNm.y / 60.0,
+            lon = field.lon + centerOffsetNm.x / (60.0 * cos(Math.toRadians(field.lat))),
+        )
+    }
+
+    /** Degrees the whole picture is rotated by. Track-up puts the active approach at the top. */
+    val rotationDeg: Float
+        get() = if (trackUp) -(approachBearing ?: 0f) else 0f
+}
 
 data class HistoryUiState(
     val transmissions: List<Transmission> = emptyList(),
@@ -77,6 +107,11 @@ data class HistoryUiState(
     val replayPct: Int = 0,
     /** When set, the recorder shows only this aircraft's transmissions. */
     val filterCallsign: String? = null,
+    /** Wall-clock span the rolling buffer currently covers, for the timeline scrubber. */
+    val bufferSpan: LongRange? = null,
+    /** Playhead inside the expanded clip, driven by the replay player rather than a timer. */
+    val replayPositionMs: Long = 0L,
+    val replayDurationMs: Long = 0L,
 ) {
     val visible: List<Transmission>
         get() = filterCallsign?.let { wanted ->
@@ -92,6 +127,12 @@ data class AlertsUiState(
     val rules: List<AlertRule> = emptyList(),
     val ruleType: RuleType = RuleType.KEYWORD,
     val active: ActiveAlert? = null,
+)
+
+data class AskUiState(
+    val question: String = "",
+    val answer: String? = null,
+    val thinking: Boolean = false,
 )
 
 /**
@@ -117,6 +158,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val audioBuffer = container.audioBuffer
     private val dsp = container.dsp
     private val notifier = container.notifier
+    private val replayPlayer = container.replayPlayer
+    private val secondaryRadio = container.secondaryRadio
+    val coastline = container.coastline
+
+    /** Which feed COMM 2 is monitoring, or null when the second radio is off. */
+    val comm2FeedId: StateFlow<String?> = secondaryRadio.feedId
 
     private var controller: MediaController? = null
     private var lastError: String? = null
@@ -185,6 +232,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private var transcribeJob: Job? = null
     private var alertJob: Job? = null
     private var pingJob: Job? = null
+    private var replayJob: Job? = null
     private var knownHexes = emptySet<String>()
 
     private val playerListener = object : Player.Listener {
@@ -322,13 +370,51 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     // ── Radar ────────────────────────────────────────────────────────────────────────────────
 
-    fun setRange(nm: Int) {
-        prefs.rangeNm = nm
-        _radar.update { it.copy(rangeNm = nm, selectedHex = null) }
+    fun setRange(nm: Float) {
+        val clamped = nm.coerceIn(MIN_RANGE_NM, MAX_RANGE_NM)
+        prefs.rangeNm = clamped.roundToInt()
+        _radar.update { it.copy(rangeNm = clamped) }
+        // The poll radius is bucketed, so pinching does not restart the ADS-B loop every frame.
         restartLiveLoops()
     }
 
+    /** Pinch zoom: multiplies the current range rather than stepping between fixed rings. */
+    fun zoomRange(factor: Float) = setRange(_radar.value.rangeNm / factor)
+
+    /** Drag the scope origin, in nautical miles east (x) and north (y) of the field. */
+    fun panScope(deltaNmEast: Float, deltaNmNorth: Float) {
+        _radar.update {
+            val next = Offset(
+                it.centerOffsetNm.x + deltaNmEast,
+                it.centerOffsetNm.y + deltaNmNorth,
+            )
+            // Don't let the field disappear entirely — cap the offset at two screens out.
+            val limit = it.rangeNm * 2f
+            it.copy(
+                centerOffsetNm = Offset(
+                    next.x.coerceIn(-limit, limit),
+                    next.y.coerceIn(-limit, limit),
+                ),
+            )
+        }
+    }
+
+    fun recenterScope() = _radar.update { it.copy(centerOffsetNm = Offset.Zero) }
+
+    fun toggleTrackUp() = _radar.update { it.copy(trackUp = !it.trackUp) }
+
     fun selectAircraft(hex: String?) { _radar.update { it.copy(selectedHex = hex) } }
+
+    /** Long-press on a contact arms a tracking rule for it without typing the callsign. */
+    fun trackAircraft(hex: String) {
+        val ac = _radar.value.aircraft.firstOrNull { it.hex == hex } ?: return
+        val term = ac.callsign?.trim()?.uppercase()
+            ?: ac.registration?.trim()?.uppercase()
+            ?: return
+        if (_alerts.value.rules.any { rule -> rule.terms.any { it.equals(term, true) } }) return
+        setRuleType(if (term.startsWith("N")) RuleType.TAIL else RuleType.FLIGHT)
+        armRule(term)
+    }
 
     fun toggleCaptions() {
         val next = !_radar.value.captionsOn
@@ -373,7 +459,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val key = LiveKey(
             feedId = feed?.id,
             playing = playing,
-            rangeNm = _radar.value.rangeNm,
+            rangeNm = pollRadiusNm(),
             captions = _radar.value.captionsOn,
             hasGroqKey = repository.groqApiKey() != null,
         )
@@ -389,10 +475,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             // the contacts stay on screen; they just stop refreshing until playback resumes.
         } else {
             val center = LatLng(feed.lat, feed.lon)
-            val range = _radar.value.rangeNm
+            val radius = pollRadiusNm()
             adsbJob = viewModelScope.launch {
                 while (true) {
-                    val fresh = AdsbClient.fetchNear(center.lat, center.lon, range)
+                    val fresh = AdsbClient.fetchNear(center.lat, center.lon, radius)
                     val trails = _radar.value.trails.toMutableMap()
                     for (ac in fresh) {
                         trails[ac.hex] = (trails[ac.hex].orEmpty() + LatLng(ac.lat, ac.lon)).takeLast(8)
@@ -402,7 +488,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
                     val entered = liveHexes - knownHexes
                     knownHexes = liveHexes
-                    _radar.update { it.copy(aircraft = fresh, trails = trails) }
+                    _radar.update {
+                        it.copy(
+                            aircraft = fresh,
+                            trails = trails,
+                            approachBearing = inferApproachBearing(fresh) ?: it.approachBearing,
+                        )
+                    }
                     entered.firstOrNull()?.let { pingContact(it) }
 
                     delay(ADSB_POLL_MS)
@@ -417,6 +509,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         } else if (_radar.value.captionsOn && key == null) {
             _radar.update { it.copy(caption = "Add a Groq API key in Settings to enable live transcription.") }
         }
+    }
+
+    /**
+     * Poll radius, bucketed to 10 NM steps. Pinch zoom changes the range continuously, and the
+     * poll must not restart on every frame of a gesture — nor refetch when a small zoom needs no
+     * new data. Always fetches a little wider than the view so targets exist before they enter it.
+     */
+    private fun pollRadiusNm(): Int {
+        val wanted = _radar.value.rangeNm * 1.3f
+        return (kotlin.math.ceil(wanted / 10f).toInt() * 10).coerceIn(10, 120)
     }
 
     private fun pingContact(hex: String) {
@@ -440,24 +542,45 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 delay(SEGMENT_MS)
                 continue
             }
-            val text = GroqTranscriber.transcribe(segment.bytes, apiKey)?.trim()
-            if (text.isNullOrBlank()) {
+            val feed = _playback.value.feed
+            // Whisper is primed with the tuned airport's own runway and fix names, which is the
+            // difference between "cleared to SCUPP" and a line of nonsense.
+            val detailed = GroqTranscriber.transcribeDetailed(
+                segment.bytes,
+                apiKey,
+                airportIcao = feed?.displayCode,
+            )
+            if (detailed == null || detailed.text.isBlank()) {
                 delay(500)
                 continue
             }
+            val text = detailed.text.trim()
 
             val plain = if (_radar.value.plainEnglishOn) {
                 GroqTranscriber.plainEnglish(text, apiKey)
             } else {
                 null
             }
-            val feed = _playback.value.feed
             val bps = audioBuffer.bytesPerSecond()
             val callsigns = GroqTranscriber.identifyCallsigns(
                 text,
                 _radar.value.aircraft.mapNotNull { it.callsign }.distinct(),
                 apiKey,
             )
+            // Keyword rules only catch what you thought to ask for; the anomaly pass is what
+            // surfaces the interesting transmission you had no rule for.
+            val keywordPriority = priorityFor(text)
+            val anomaly = if (keywordPriority == Priority.ROUTINE) {
+                GroqTranscriber.anomalyScore(text, apiKey)
+            } else {
+                null
+            }
+            val priority = when {
+                keywordPriority != Priority.ROUTINE -> keywordPriority
+                (anomaly?.score ?: 0f) >= ANOMALY_NOTABLE -> Priority.NOTABLE
+                else -> Priority.ROUTINE
+            }
+
             val entry = Transmission(
                 id = UUID.randomUUID().toString(),
                 timestampMs = System.currentTimeMillis(),
@@ -465,29 +588,35 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 feedLabel = feed?.let { "${it.displayCode} ${shortFacility(it.name)}" } ?: "—",
                 durationMs = ((segment.bytes.size / bps) * 1000).toLong(),
                 raw = text,
-                plainEnglish = plain,
+                plainEnglish = plain ?: anomaly?.takeIf { it.score >= ANOMALY_NOTABLE }?.reason,
                 callsign = callsigns.firstOrNull(),
-                priority = priorityFor(text),
+                priority = priority,
                 bufferOffset = segment.offset,
                 bufferLength = segment.bytes.size,
                 waveform = waveformOf(segment.bytes),
+                words = detailed.words.map { TranscriptWord(it.text, it.startMs, it.endMs) },
             )
 
             _history.update { it.copy(transmissions = (listOf(entry) + it.transmissions).take(MAX_HISTORY)) }
 
             val display = plain ?: text
             val hits = callsigns.map { it.trim().uppercase() }.toSet()
+            val spokenTo = _radar.value.aircraft
+                .firstOrNull { it.callsign?.trim()?.uppercase() in hits }?.hex
             _radar.update { state ->
                 state.copy(
                     caption = display,
                     transcribing = hits,
-                    selectedHex = if (state.followOn && hits.isNotEmpty()) {
-                        state.aircraft.firstOrNull { it.callsign?.trim()?.uppercase() in hits }?.hex
-                            ?: state.selectedHex
-                    } else {
-                        state.selectedHex
-                    },
+                    selectedHex = if (state.followOn && spokenTo != null) spokenTo else state.selectedHex,
                 )
+            }
+            // Ripple out from whoever was just addressed, so the sound has a place on the scope.
+            spokenTo?.let { hex ->
+                viewModelScope.launch {
+                    _radar.update { it.copy(rippleHex = hex) }
+                    delay(RIPPLE_MS)
+                    _radar.update { if (it.rippleHex == hex) it.copy(rippleHex = null) else it }
+                }
             }
 
             matchAlerts(entry)
@@ -609,21 +738,98 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun replay(id: String) {
+    /** Plays a recorded transmission, optionally from a word offset inside it. */
+    fun replay(id: String, fromMs: Long = 0L) {
         val entry = _history.value.transmissions.firstOrNull { it.id == id } ?: return
         val offset = entry.bufferOffset ?: return
         val bytes = audioBuffer.segment(offset, entry.bufferLength) ?: return
-        viewModelScope.launch {
-            // Progress is driven off the clip's own duration; the clip plays through the
-            // dedicated replay player in the service so the live feed is not interrupted.
-            container.replayPlayer.play(bytes)
-            val steps = 40
-            for (step in 1..steps) {
-                delay(entry.durationMs / steps)
-                _history.update { if (it.expandedId == id) it.copy(replayPct = step * 100 / steps) else it }
+        replayPlayer.play(id, bytes, fromMs)
+        startReplayTracking()
+    }
+
+    /** Tapping a word in the transcript jumps the audio to that moment. */
+    fun replayFromWord(id: String, word: TranscriptWord) = replay(id, word.startMs)
+
+    /**
+     * Follows the replay player's real position rather than estimating it. A timer only ever
+     * approximates the audio, which shows up as a progress bar that drifts off the waveform.
+     */
+    private fun startReplayTracking() {
+        replayJob?.cancel()
+        replayJob = viewModelScope.launch {
+            while (replayPlayer.playing.value) {
+                replayPlayer.refreshPosition()
+                val position = replayPlayer.positionMs.value
+                val duration = replayPlayer.durationMs.value
+                _history.update {
+                    it.copy(
+                        replayPositionMs = position,
+                        replayDurationMs = duration,
+                        replayPct = if (duration > 0) (position * 100 / duration).toInt() else 0,
+                    )
+                }
+                delay(REPLAY_TICK_MS)
             }
-            _history.update { if (it.expandedId == id) it.copy(replayPct = 0) else it }
+            _history.update { it.copy(replayPct = 0, replayPositionMs = 0L) }
         }
+    }
+
+    /** Scrubs the whole 30-minute window: plays a slice starting at a wall-clock instant. */
+    fun scrubBuffer(timeMs: Long) {
+        val offset = audioBuffer.offsetAtTime(timeMs) ?: return
+        val length = (audioBuffer.bytesPerSecond() * SCRUB_SECONDS).toInt()
+        val bytes = audioBuffer.segment(offset, length) ?: return
+        replayPlayer.play("buffer:$timeMs", bytes)
+        startReplayTracking()
+    }
+
+    fun refreshBufferSpan() {
+        _history.update { it.copy(bufferSpan = audioBuffer.timeSpan()) }
+    }
+
+    // ── Ask the feed ─────────────────────────────────────────────────────────────────────────
+
+    private val _ask = MutableStateFlow(AskUiState())
+    val ask: StateFlow<AskUiState> = _ask.asStateFlow()
+
+    fun setAskQuestion(text: String) = _ask.update { it.copy(question = text) }
+
+    fun clearAsk() = _ask.value = AskUiState()
+
+    /** Answers a question from the recorder log — nothing more, so it can't invent traffic. */
+    fun askTheFeed() {
+        val question = _ask.value.question.trim()
+        if (question.isEmpty() || _ask.value.thinking) return
+        val key = repository.groqApiKey() ?: run {
+            _ask.update { it.copy(answer = "Add a Groq API key in Settings to ask about the feed.") }
+            return
+        }
+        val log = _history.value.transmissions.map { "${it.clockLabel} ${it.raw}" }
+        if (log.isEmpty()) {
+            _ask.update { it.copy(answer = "Nothing recorded yet — turn captions on and let the feed run.") }
+            return
+        }
+        viewModelScope.launch {
+            _ask.update { it.copy(thinking = true, answer = null) }
+            val answer = GroqTranscriber.askAboutTranscript(question, log, key)
+            _ask.update {
+                it.copy(thinking = false, answer = answer ?: "Couldn't reach Groq for that one.")
+            }
+        }
+    }
+
+    // ── COMM 2 ───────────────────────────────────────────────────────────────────────────────
+
+    /** The second radio: a feed monitored quietly under the primary, as a real stack would. */
+    fun tuneComm2(feed: Feed) {
+        if (feed.id == _playback.value.currentMediaId) return // already on COMM 1
+        secondaryRadio.tune(feed)
+    }
+
+    fun stopComm2() = secondaryRadio.stop()
+
+    fun toggleComm2(feed: Feed) {
+        if (secondaryRadio.feedId.value == feed.id) stopComm2() else tuneComm2(feed)
     }
 
     /** Writes a transmission's audio to a shareable file and returns it, or null if it aged out. */
@@ -720,15 +926,23 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         controller?.removeListener(playerListener)
         controller?.release()
         controller = null
+        replayPlayer.stop()
+        secondaryRadio.release()
     }
 
     private companion object {
+        const val MIN_RANGE_NM = 5f
+        const val MAX_RANGE_NM = 80f
+        const val RIPPLE_MS = 1_600L
+        const val REPLAY_TICK_MS = 80L
+        const val SCRUB_SECONDS = 12
         const val ADSB_POLL_MS = 5_000L
         const val SEGMENT_MS = 8_000L
         const val PING_MS = 3_300L
         const val ALERT_MS = 6_000L
         const val MIN_CLIP_BYTES = 800
         const val MAX_HISTORY = 200
+        const val ANOMALY_NOTABLE = 0.55f
     }
 }
 
@@ -737,6 +951,37 @@ private fun typeLabel(type: RuleType): String = when (type) {
     RuleType.FLIGHT -> "FLIGHT"
     RuleType.TAIL -> "TAIL #"
     RuleType.FEED -> "FEED"
+}
+
+/**
+ * The bearing traffic is arriving on, inferred from the traffic itself.
+ *
+ * Precise runway data isn't bundled, but aircraft on final announce the active runway by flying it:
+ * low, slowing, descending, and all pointing the same way. The circular mean of their tracks is the
+ * approach heading, which is what the corridor overlay and track-up mode need.
+ */
+private fun inferApproachBearing(aircraft: List<Aircraft>): Float? {
+    val onApproach = aircraft.filter { ac ->
+        val alt = ac.altitudeFt ?: return@filter false
+        alt in 500..7_000 &&
+            (ac.verticalRateFpm ?: 0) < -200 &&
+            ac.groundSpeedKt in 110.0..260.0
+    }
+    if (onApproach.size < 2) return null
+
+    var sumSin = 0.0
+    var sumCos = 0.0
+    for (ac in onApproach) {
+        val rad = Math.toRadians(ac.trackDeg)
+        sumSin += sin(rad)
+        sumCos += cos(rad)
+    }
+    // A wide spread means arrivals aren't aligned — no single corridor to draw.
+    val spread = hypot(sumSin, sumCos) / onApproach.size
+    if (spread < 0.75) return null
+
+    val mean = Math.toDegrees(atan2(sumSin, sumCos))
+    return ((mean + 360.0) % 360.0).toFloat()
 }
 
 /** "Boston Logan Tower" → "TWR", so the recorder's feed tag stays short. */

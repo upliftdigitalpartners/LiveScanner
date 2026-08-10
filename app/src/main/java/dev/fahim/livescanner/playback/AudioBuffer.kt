@@ -170,6 +170,33 @@ class AudioBuffer(context: Context) {
     /** Bytes for a previously recorded span, for REPLAY and CLIP. Null once it has aged out. */
     fun segment(from: Long, length: Int): ByteArray? = read(from, length)
 
+    /** The wall-clock span the window currently covers, or null before anything is buffered. */
+    fun timeSpan(): LongRange? {
+        synchronized(lock) {
+            val first = index.firstOrNull()?.first ?: return null
+            val last = index.lastOrNull()?.first ?: return null
+            if (last <= first) return null
+            return first..last
+        }
+    }
+
+    /** Byte offset closest to a wall-clock instant — what the timeline scrubber seeks with. */
+    fun offsetAtTime(timeMs: Long): Long? {
+        synchronized(lock) {
+            if (index.isEmpty()) return null
+            var best: Pair<Long, Long>? = null
+            var bestDelta = Long.MAX_VALUE
+            for (sample in index) {
+                val delta = kotlin.math.abs(sample.first - timeMs)
+                if (delta < bestDelta) {
+                    bestDelta = delta
+                    best = sample
+                }
+            }
+            return best?.second?.takeIf { it >= oldestRetained }
+        }
+    }
+
     /** Observed bytes per second, used to convert clip lengths to durations. */
     fun bytesPerSecond(): Double {
         synchronized(lock) {

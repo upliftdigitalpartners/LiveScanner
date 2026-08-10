@@ -7,7 +7,6 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
-import java.io.ByteArrayOutputStream
 import java.io.DataOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
@@ -15,9 +14,9 @@ import java.net.URL
 /**
  * Live ATC transcription via Groq's Whisper endpoint (OpenAI-compatible).
  *
- * [captureSegment] reads a few seconds of the raw audio stream over a fresh connection, and
- * [transcribe] uploads that clip to whisper-large-v3-turbo. Cheap (~$0.04/hr) and fast enough
- * for near-live captions. Experimental: ATC audio is noisy, so accuracy varies.
+ * Audio comes from the playback service's rolling buffer, which is tee'd off the stream ExoPlayer
+ * is already reading — this object never opens its own connection to a feed. Cheap (~$0.04/hr) and
+ * fast enough for near-live captions. Experimental: ATC audio is noisy, so accuracy varies.
  */
 object GroqTranscriber {
 
@@ -26,45 +25,56 @@ object GroqTranscriber {
     private const val CHAT_ENDPOINT = "https://api.groq.com/openai/v1/chat/completions"
     private const val MODEL = "whisper-large-v3-turbo"
     private const val BOUNDARY = "----LiveScannerBoundary7s9d3"
-    private const val ATC_PROMPT =
-        "Air traffic control radio. Aviation phraseology: callsigns, runways, headings, " +
-            "altitudes, cleared for takeoff, cleared to land, contact, traffic, squawk."
-
-    /** Reads up to [millis] of raw audio bytes from [streamUrl] via a separate connection. */
-    suspend fun captureSegment(streamUrl: String, millis: Long): ByteArray? = withContext(Dispatchers.IO) {
-        var conn: HttpURLConnection? = null
-        try {
-            conn = (URL(streamUrl).openConnection() as HttpURLConnection).apply {
-                instanceFollowRedirects = true
-                connectTimeout = 12_000
-                readTimeout = 12_000
-                setRequestProperty("User-Agent", "LiveScanner/0.1 (Android)")
-                // No Icy-MetaData header → the stream is pure audio, no interleaved metadata.
-            }
-            val out = ByteArrayOutputStream()
-            val buffer = ByteArray(4096)
-            val deadline = System.currentTimeMillis() + millis
-            conn.inputStream.use { input ->
-                while (System.currentTimeMillis() < deadline) {
-                    val n = input.read(buffer)
-                    if (n < 0) break
-                    out.write(buffer, 0, n)
-                    if (out.size() > 4_000_000) break
-                }
-            }
-            out.toByteArray()
-        } catch (t: Throwable) {
-            Log.w(TAG, "audio capture failed", t)
-            null
-        } finally {
-            conn?.disconnect()
-        }
-    }
 
     /** Uploads an audio clip to Groq Whisper; returns the transcript text (or null on failure). */
     suspend fun transcribe(audio: ByteArray, apiKey: String): String? = withContext(Dispatchers.IO) {
-        var conn: HttpURLConnection? = null
+        postAudio(audio, apiKey, responseFormat = "text", prompt = airportPrompt(null))?.trim()
+    }
+
+    /**
+     * Same upload as [transcribe] but asks for word-level timings, so the caller can highlight
+     * words during playback. [airportIcao] primes the decoder with that field's local vocabulary.
+     */
+    suspend fun transcribeDetailed(
+        audio: ByteArray,
+        apiKey: String,
+        airportIcao: String? = null,
+    ): Transcript? = withContext(Dispatchers.IO) {
+        val body = postAudio(
+            audio = audio,
+            apiKey = apiKey,
+            responseFormat = "verbose_json",
+            prompt = airportPrompt(airportIcao),
+            wordTimestamps = true,
+        ) ?: return@withContext null
         try {
+            val parsed = AppJson.decodeFromString<VerboseTranscription>(body)
+            Transcript(
+                text = parsed.text.trim(),
+                words = parsed.words.map {
+                    Word(
+                        text = it.word.trim(),
+                        startMs = (it.start * 1000.0).toLong(),
+                        endMs = (it.end * 1000.0).toLong(),
+                    )
+                },
+            )
+        } catch (t: Throwable) {
+            Log.w(TAG, "verbose_json parse failed", t)
+            null
+        }
+    }
+
+    /** Posts the clip as multipart/form-data and returns the raw response body. */
+    private fun postAudio(
+        audio: ByteArray,
+        apiKey: String,
+        responseFormat: String,
+        prompt: String,
+        wordTimestamps: Boolean = false,
+    ): String? {
+        var conn: HttpURLConnection? = null
+        return try {
             conn = (URL(ENDPOINT).openConnection() as HttpURLConnection).apply {
                 requestMethod = "POST"
                 doOutput = true
@@ -80,15 +90,16 @@ object GroqTranscriber {
                 body.write(audio)
                 body.writeBytes("\r\n")
                 textPart(body, "model", MODEL)
-                textPart(body, "response_format", "text")
+                textPart(body, "response_format", responseFormat)
                 textPart(body, "language", "en")
-                textPart(body, "prompt", ATC_PROMPT)
+                textPart(body, "prompt", prompt)
+                if (wordTimestamps) textPart(body, "timestamp_granularities[]", "word")
                 body.writeBytes("--$BOUNDARY--\r\n")
                 body.flush()
             }
             val code = conn.responseCode
             if (code in 200..299) {
-                conn.inputStream.bufferedReader().use { it.readText().trim() }
+                conn.inputStream.bufferedReader().use { it.readText() }
             } else {
                 Log.w(TAG, "Groq HTTP $code: ${conn.errorStream?.bufferedReader()?.use { it.readText() }}")
                 null
@@ -157,6 +168,70 @@ object GroqTranscriber {
         }
     }
 
+    /** Rates how far a transmission departs from routine phraseology, 0..1, and says why. */
+    suspend fun anomalyScore(transcript: String, apiKey: String): Anomaly? = withContext(Dispatchers.IO) {
+        try {
+            val system = "You rate air traffic control transmissions for how unusual they are. " +
+                "Score 0.0 for entirely routine traffic: clearances, handoffs, readbacks, taxi " +
+                "instructions, altitude and heading changes. Score toward 1.0 for the unusual: " +
+                "emergencies, equipment problems, unusual requests, confusion or repeated " +
+                "readbacks, go-arounds, medical situations. " +
+                "Reply with strict JSON only: {\"score\":0.0,\"reason\":\"...\"}. " +
+                "Keep reason under 12 words. No text outside the JSON."
+            val req = ChatRequest(
+                model = "llama-3.1-8b-instant",
+                messages = listOf(ChatMessage("system", system), ChatMessage("user", transcript)),
+                temperature = 0.0,
+                maxTokens = 80,
+            )
+            val response = postJson(CHAT_ENDPOINT, AppJson.encodeToString(req), apiKey) ?: return@withContext null
+            val content = AppJson.decodeFromString<ChatResponse>(response)
+                .choices.firstOrNull()?.message?.content.orEmpty()
+            val json = jsonObjectIn(content) ?: return@withContext null
+            val wire = AppJson.decodeFromString<AnomalyWire>(json)
+            val reason = wire.reason.trim()
+            if (reason.isEmpty()) return@withContext null
+            Anomaly(score = wire.score.coerceIn(0.0, 1.0).toFloat(), reason = reason)
+        } catch (t: Throwable) {
+            Log.w(TAG, "anomalyScore failed", t)
+            null
+        }
+    }
+
+    /** Answers a free-text question about what has been heard recently. */
+    suspend fun askAboutTranscript(question: String, transcript: List<String>, apiKey: String): String? =
+        withContext(Dispatchers.IO) {
+            try {
+                val lines = transcript.takeLast(60)
+                if (lines.isEmpty()) return@withContext null
+                val log = lines.mapIndexed { i, line -> "${i + 1}. ${line.trim()}" }.joinToString("\n")
+                val system = "You answer questions about a log of air traffic control radio " +
+                    "transmissions. Use only what the log says — never guess or fill in aviation " +
+                    "knowledge that isn't there. If the log does not contain the answer, say so " +
+                    "plainly. Two sentences maximum, plain English for someone who is not a pilot."
+                val user = "Log:\n$log\n\nQuestion: $question"
+                val req = ChatRequest(
+                    model = "llama-3.1-8b-instant",
+                    messages = listOf(ChatMessage("system", system), ChatMessage("user", user)),
+                    temperature = 0.2,
+                    maxTokens = 160,
+                )
+                val response = postJson(CHAT_ENDPOINT, AppJson.encodeToString(req), apiKey) ?: return@withContext null
+                AppJson.decodeFromString<ChatResponse>(response)
+                    .choices.firstOrNull()?.message?.content?.trim()?.takeIf { it.isNotEmpty() }
+            } catch (t: Throwable) {
+                Log.w(TAG, "askAboutTranscript failed", t)
+                null
+            }
+        }
+
+    /** Smallest slice of [raw] that could be a JSON object — models like to add a sentence around it. */
+    private fun jsonObjectIn(raw: String): String? {
+        val start = raw.indexOf('{')
+        val end = raw.lastIndexOf('}')
+        return if (start >= 0 && end > start) raw.substring(start, end + 1) else null
+    }
+
     private fun postJson(url: String, json: String, apiKey: String): String? {
         var conn: HttpURLConnection? = null
         return try {
@@ -183,6 +258,32 @@ object GroqTranscriber {
         }
     }
 }
+
+/** One word as Whisper timed it, millis from the start of the clip. */
+data class Word(val text: String, val startMs: Long, val endMs: Long)
+
+/** A transcript plus its word timings; [words] is empty when the API returned none. */
+data class Transcript(val text: String, val words: List<Word>)
+
+/** How unusual a transmission is (0..1) and a short human reason. */
+data class Anomaly(val score: Float, val reason: String)
+
+/** Whisper's verbose_json shape: start/end are seconds as doubles. */
+@Serializable
+private data class VerboseTranscription(
+    val text: String = "",
+    val words: List<VerboseWord> = emptyList(),
+)
+
+@Serializable
+private data class VerboseWord(
+    val word: String = "",
+    val start: Double = 0.0,
+    val end: Double = 0.0,
+)
+
+@Serializable
+private data class AnomalyWire(val score: Double = 0.0, val reason: String = "")
 
 @Serializable
 private data class ChatRequest(

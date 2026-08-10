@@ -27,6 +27,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -50,7 +51,13 @@ class MainActivity : ComponentActivity() {
             // signal-level sample recomposed the entire app.
             val night by vm.night.collectAsStateWithLifecycle()
             LiveScannerTheme(night = night) {
-                AppRoot(vm)
+                // The panel powers on like avionics: self test first, then the deck.
+                var booted by remember { mutableStateOf(false) }
+                if (booted) {
+                    AppRoot(vm)
+                } else {
+                    BootSequence(onFinished = { booted = true })
+                }
             }
         }
     }
@@ -97,24 +104,35 @@ fun AppRoot(vm: MainViewModel) {
             .background(FlightDeck.bg),
     ) {
         HorizontalPager(state = pagerState, modifier = Modifier.fillMaxSize()) { page ->
+            // Parallax: pages trail the swipe slightly so the filmstrip reads as layered glass.
+            // The pager offset is read inside graphicsLayer, which resolves in the draw phase —
+            // reading it in composition would recompose every page on every frame of a swipe.
+            val parallax = Modifier.graphicsLayer {
+                val distance = (pagerState.currentPage - page) + pagerState.currentPageOffsetFraction
+                translationX = size.width * distance * 0.18f
+            }
             when (Screen.entries[page]) {
-                Screen.HOME -> HomeScreen(
-                    vm = vm,
-                    onAddFeed = { showAddFeed = true },
-                    onOpenSettings = { showSettings = true },
-                )
+                Screen.HOME -> Box(parallax) {
+                    HomeScreen(
+                        vm = vm,
+                        onAddFeed = { showAddFeed = true },
+                        onOpenSettings = { showSettings = true },
+                    )
+                }
 
-                Screen.RADAR -> RadarScreen(vm = vm, onBack = { vm.goTo(Screen.HOME) })
+                Screen.RADAR -> Box(parallax) {
+                    RadarScreen(vm = vm, onBack = { vm.goTo(Screen.HOME) })
+                }
 
-                Screen.HISTORY -> Box(Modifier.statusBarsPadding()) {
+                Screen.HISTORY -> Box(parallax.statusBarsPadding()) {
                     HistoryScreen(vm = vm, onBack = { vm.goTo(Screen.HOME) })
                 }
 
-                Screen.ALERTS -> Box(Modifier.statusBarsPadding()) {
+                Screen.ALERTS -> Box(parallax.statusBarsPadding()) {
                     AlertsScreen(vm = vm, onBack = { vm.goTo(Screen.HOME) })
                 }
 
-                Screen.AUDIO -> Box(Modifier.statusBarsPadding()) {
+                Screen.AUDIO -> Box(parallax.statusBarsPadding()) {
                     AudioScreen(vm = vm, onBack = { vm.goTo(Screen.HOME) })
                 }
             }
