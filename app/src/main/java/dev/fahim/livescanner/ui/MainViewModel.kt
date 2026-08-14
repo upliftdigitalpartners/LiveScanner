@@ -176,7 +176,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _radar = MutableStateFlow(
         RadarUiState(
-            rangeNm = prefs.rangeNm,
+            rangeNm = prefs.rangeNm.toFloat(),
             captionsOn = prefs.captionsOn,
             plainEnglishOn = prefs.plainEnglishOn,
             followOn = prefs.followOn,
@@ -544,10 +544,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
 
         transcribeJob?.cancel()
-        val key = repository.groqApiKey()
-        if (_radar.value.captionsOn && playing && key != null) {
-            transcribeJob = viewModelScope.launch { transcribeLoop(key) }
-        } else if (_radar.value.captionsOn && key == null) {
+        val groqKey = repository.groqApiKey()
+        if (_radar.value.captionsOn && playing && groqKey != null) {
+            transcribeJob = viewModelScope.launch { transcribeLoop(groqKey) }
+        } else if (_radar.value.captionsOn && groqKey == null) {
             _radar.update { it.copy(caption = "Add a Groq API key in Settings to enable live transcription.") }
         }
     }
@@ -835,7 +835,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setAskQuestion(text: String) = _ask.update { it.copy(question = text) }
 
-    fun clearAsk() = _ask.value = AskUiState()
+    fun clearAsk() {
+        _ask.value = AskUiState()
+    }
 
     /** Answers a question from the recorder log — nothing more, so it can't invent traffic. */
     fun askTheFeed() {
