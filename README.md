@@ -17,6 +17,7 @@ the tower while you drive past the airport, or tune the local PD on a road trip.
 - **Favorites**, **search**, background playback, lock-screen controls.
 - **Android Auto** — the same feed tree shows up in the car; tap to listen.
 - **Live radar** — listening to an airport? Swipe to **Radar** to watch live aircraft on a navigation-display scope (ADS-B via [adsb.lol](https://adsb.lol/), free, no key): altitude-coloured targets with altitude posts, lead vectors, fading trails, phosphor persistence as the sweep crosses them, a coastline underlay, pinch zoom, drag to re-centre, track-up mode, an inferred approach corridor, a side-profile strip showing the arrival stack, and tap any plane for details + a real photo of it ([planespotters](https://www.planespotters.net/)).
+- **Weather radar** — toggle **WX** on the scope to lay live precipitation ([RainViewer](https://www.rainviewer.com/api.html), free, no key) under the traffic, the way a real navigation display shows it.
 - **COMM 2** — long-press any feed to monitor it quietly underneath the one you're listening to, the way a real radio stack lets you keep an ear on ground while you work tower.
 - **Flight recorder** — a rolling 30-minute buffer of the feed, split into transmissions you can re-read, replay and export as a clip. One buffer per feed, and they survive restarts.
 - **Track a flight** — arm a rule with a flight number and the app follows it: banner and notification whenever it's addressed, an amber `TRK` ring on the scope, and a one-tap filter in the recorder showing only that aircraft's calls.
@@ -70,6 +71,13 @@ the app, but aircraft on final announce the active runway by flying it — low, 
 all pointing the same way. The circular mean of their tracks is the approach heading, and it's only
 drawn when their spread is tight enough to mean something. That also makes it *live*: it follows a
 runway change instead of showing every runway the field has.
+
+**The weather** comes from RainViewer's Web Mercator tiles, which have to be placed on a view that
+is not a map: the scope is a range-ring plan view in nautical miles that rotates and pans. Tiles are
+therefore positioned by their geographic corners and projected exactly like contacts are, then the
+whole layer is rotated as one — a bitmap cannot follow a rotated picture any other way. Over the
+5-80 NM the scope covers, the difference between Mercator's latitude scaling and the scope's flat
+projection stays well under a pixel.
 
 **The coastline** is clipped from Natural Earth 1:10m data at build time by `tools/build_coastline.py`
 into `assets/coastline.json` — 31 of the 54 airports sit near enough to a shore to get one. Inland

@@ -69,6 +69,11 @@ class UserPrefs(context: Context) {
         get() = prefs.getBoolean(KEY_EN, false)
         set(value) = prefs.edit().putBoolean(KEY_EN, value).apply()
 
+    /** WX — precipitation radar under the traffic. */
+    var weatherOn: Boolean
+        get() = prefs.getBoolean(KEY_WX, false)
+        set(value) = prefs.edit().putBoolean(KEY_WX, value).apply()
+
     /** FLW — spotlight the aircraft currently being talked to. */
     var followOn: Boolean
         get() = prefs.getBoolean(KEY_FLW, true)
@@ -126,6 +131,7 @@ class UserPrefs(context: Context) {
         const val KEY_CC = "cc_on"
         const val KEY_EN = "en_on"
         const val KEY_FLW = "flw_on"
+        const val KEY_WX = "wx_on"
         const val KEY_GAIN = "gain"
         const val KEY_SQUELCH = "squelch"
         const val KEY_EQ = "eq_preset"

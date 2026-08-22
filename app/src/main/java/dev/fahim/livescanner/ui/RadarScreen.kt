@@ -32,12 +32,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
@@ -47,6 +49,8 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
@@ -113,6 +117,7 @@ fun RadarScreen(vm: MainViewModel, onBack: () -> Unit) {
                     FdKey("CC", radar.captionsOn, FdAccent.CYAN) { vm.toggleCaptions() }
                     FdKey("EN", radar.plainEnglishOn, FdAccent.MAGENTA) { vm.togglePlainEnglish() }
                     FdKey("FLW", radar.followOn, FdAccent.GREEN) { vm.toggleFollow() }
+                    FdKey("WX", radar.weatherOn, FdAccent.CYAN) { vm.toggleWeather() }
                 }
             },
         )
@@ -128,11 +133,13 @@ fun RadarScreen(vm: MainViewModel, onBack: () -> Unit) {
             val icao = feed.displayCode
             // Loaded once per airport and cached by the loader; inland fields simply get none.
             val shoreline = remember(icao) { vm.coastline.forAirport(icao) }
+            val weather = rememberWeatherTiles(origin, radar.rangeNm, radar.weatherOn)
             Box(Modifier.weight(1f).fillMaxWidth()) {
                 Scope(
                     origin = origin,
                     radar = radar,
                     shoreline = shoreline,
+                    weather = weather,
                     playing = playback.isPlaying,
                     onSelect = vm::selectAircraft,
                     onTrack = vm::trackAircraft,
@@ -276,6 +283,7 @@ private fun Scope(
     origin: LatLng,
     radar: RadarUiState,
     shoreline: List<List<LatLng>>,
+    weather: List<WeatherTile>,
     playing: Boolean,
     onSelect: (String?) -> Unit,
     onTrack: (String) -> Unit,
@@ -336,6 +344,7 @@ private fun Scope(
         )
     }
     val diamond = remember { Path() }
+    val scopeClip = remember { Path() }
     val dashed = remember { PathEffect.dashPathEffect(floatArrayOf(6f, 8f)) }
 
     // Smoothed screen offsets per contact. Dead reckoning is continuous, but a new fix corrects the
@@ -388,6 +397,39 @@ private fun Scope(
         val cy = size.height / 2f
         val scopeR = min(size.width, size.height) / 2f * 0.92f
         val seconds = nowNanos / 1e9
+
+        // Precipitation radar sits below every other layer: it is context, not data. Corners are
+        // projected unrotated and the whole layer is turned as one, which is both cheaper than
+        // rotating each tile and the only way a bitmap can follow a rotated picture.
+        if (weather.isNotEmpty()) {
+            scopeClip.rewind()
+            scopeClip.addOval(Rect(cx - scopeR, cy - scopeR, cx + scopeR, cy + scopeR))
+            clipPath(scopeClip) {
+                rotate(degrees = rotation, pivot = Offset(cx, cy)) {
+                    for (cell in weather) {
+                        val nw = projectLatLng(
+                            origin, LatLng(cell.tile.northLat, cell.tile.westLon),
+                            0f, cx, cy, scopeR, rangeNm,
+                        )
+                        val se = projectLatLng(
+                            origin, LatLng(cell.tile.southLat, cell.tile.eastLon),
+                            0f, cx, cy, scopeR, rangeNm,
+                        )
+                        val w = (se.x - nw.x).roundToInt()
+                        val h = (se.y - nw.y).roundToInt()
+                        if (w <= 0 || h <= 0) continue
+                        drawImage(
+                            image = cell.image,
+                            srcOffset = IntOffset.Zero,
+                            srcSize = IntSize(cell.image.width, cell.image.height),
+                            dstOffset = IntOffset(nw.x.roundToInt(), nw.y.roundToInt()),
+                            dstSize = IntSize(w, h),
+                            alpha = 0.40f,
+                        )
+                    }
+                }
+            }
+        }
 
         // Shoreline underneath everything: the strongest orienting cue a coastal field has. Drawn
         // very faint so it reads as ground truth rather than as data.
