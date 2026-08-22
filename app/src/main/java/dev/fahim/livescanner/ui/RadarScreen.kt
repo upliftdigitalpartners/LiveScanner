@@ -53,6 +53,7 @@ import coil.compose.AsyncImage
 import dev.fahim.livescanner.data.Aircraft
 import dev.fahim.livescanner.data.LatLng
 import dev.fahim.livescanner.data.PhotoClient
+import dev.fahim.livescanner.data.RegistryClient
 import dev.fahim.livescanner.data.friendlyType
 import dev.fahim.livescanner.ui.theme.B612Mono
 import dev.fahim.livescanner.ui.theme.FdDim
@@ -634,7 +635,10 @@ private fun targetColor(ac: Aircraft): Color =
 private fun SelectedBlock(ac: Aircraft, onClose: () -> Unit) {
     val p = FlightDeck
     var photo by remember(ac.hex) { mutableStateOf<PhotoClient.Photo?>(null) }
+    var registry by remember(ac.hex) { mutableStateOf<RegistryClient.Registration?>(null) }
     LaunchedEffect(ac.hex) { photo = PhotoClient.fetch(ac.hex) }
+    // The FAA registry knows every US civil aircraft; the built-in type table knows a few dozen.
+    LaunchedEffect(ac.hex) { registry = RegistryClient.lookup(ac.hex) }
 
     Row(
         Modifier
@@ -658,8 +662,16 @@ private fun SelectedBlock(ac: Aircraft, onClose: () -> Unit) {
             Spacer(Modifier.width(12.dp))
         }
         Column(Modifier.weight(1f)) {
+            val ident = ac.callsign?.trim()
+                ?: registry?.nNumber
+                ?: ac.registration
+                ?: ac.hex
+            val typeLabel = registry?.typeLabel
+                ?: friendlyType(ac.type)
+                ?: ac.type
+                ?: "UNKNOWN"
             PanelText(
-                "${ac.callsign?.trim() ?: ac.registration ?: ac.hex} · ${friendlyType(ac.type) ?: "UNKNOWN"}".uppercase(),
+                "$ident · $typeLabel".uppercase(),
                 color = p.textHi,
                 size = FdType.rowTitle,
                 maxLines = 1,
@@ -682,6 +694,22 @@ private fun SelectedBlock(ac: Aircraft, onClose: () -> Unit) {
                 size = FdType.control,
                 maxLines = 1,
             )
+            // Registry extras, only when the lookup actually returned something.
+            registry?.let { reg ->
+                val detail = listOfNotNull(
+                    reg.nNumber?.takeIf { ac.callsign != null },
+                    reg.year,
+                    reg.owner,
+                ).joinToString(" · ")
+                if (detail.isNotBlank()) {
+                    PanelText(
+                        detail.uppercase(),
+                        color = p.textFaint,
+                        size = FdType.control,
+                        maxLines = 1,
+                    )
+                }
+            }
         }
         androidx.compose.material3.Text(
             "✕",
