@@ -19,9 +19,9 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -400,6 +400,7 @@ private fun SearchField(query: String, onQuery: (String) -> Unit) {
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun FeedRow(
     feed: Feed,
@@ -422,9 +423,10 @@ private fun FeedRow(
                 RoundedCornerShape(FdDim.radiusRow),
             )
             // Tap tunes COMM 1; long-press puts the feed on COMM 2 underneath it.
-            .pointerInput(feed.id) {
-                detectTapGestures(onTap = { onPlay() }, onLongPress = { onComm2() })
-            }
+            // combinedClickable rather than raw gesture detection: it cooperates with the list's
+            // scroll (a tap that drifts a pixel still counts), and keeps the ripple and the
+            // accessibility semantics that a bare pointerInput throws away.
+            .combinedClickable(onClick = onPlay, onLongClick = onComm2)
             .padding(FdDim.rowPadding),
         verticalAlignment = Alignment.CenterVertically,
     ) {
