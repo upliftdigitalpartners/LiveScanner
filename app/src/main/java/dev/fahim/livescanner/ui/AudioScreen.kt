@@ -135,7 +135,7 @@ fun AudioScreen(vm: MainViewModel, onBack: () -> Unit) {
             )
             DspToggle(
                 name = "TRIM SILENCE",
-                description = "Skip dead air in the 30-minute buffer",
+                description = "Skip dead air when replaying from the buffer",
                 on = audio.trimSilence,
                 onToggle = vm::toggleTrimSilence,
             )

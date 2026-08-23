@@ -87,9 +87,23 @@ private class Biquad {
 class FlightDeckDsp : BaseAudioProcessor() {
 
     @Volatile var gain: Int = 50              // 0..100, 50 = unity
-    @Volatile var squelch: Int = 38           // 0..100 threshold
-    @Volatile var gateEnabled: Boolean = true
-    /** Drop gated frames outright instead of muting them, closing the dead air between calls. */
+
+    /** The squelch gate lives in its own class so it can be tested; see [NoiseGate]. */
+    private val gate = NoiseGate()
+
+    var squelch: Int
+        get() = gate.squelch
+        set(value) { gate.squelch = value }
+
+    var gateEnabled: Boolean
+        get() = gate.enabled
+        set(value) { gate.enabled = value }
+
+    /**
+     * TRIM SILENCE is a *recorder* setting — "skip dead air in the 30-minute buffer". It is
+     * deliberately not applied to live output: dropping frames from a live stream runs words
+     * together and starves the audio sink, which is heard as the feed cutting in and out.
+     */
     @Volatile var trimSilence: Boolean = true
     @Volatile var preset: EqPreset = EqPreset.VOICE
         set(value) { field = value; presetDirty = true }
@@ -108,9 +122,6 @@ class FlightDeckDsp : BaseAudioProcessor() {
     private val eqA = Biquad()
     private val eqB = Biquad()
 
-    /** Gate envelope, so the gate opens fast and closes slowly instead of chattering. */
-    private var envelope = 0.0
-
     /** Reused sample scratch — the audio path must not allocate per buffer. */
     private var scratch = ShortArray(0)
 
@@ -122,6 +133,7 @@ class FlightDeckDsp : BaseAudioProcessor() {
         }
         sampleRate = inputAudioFormat.sampleRate
         channels = inputAudioFormat.channelCount
+        gate.configure(sampleRate)
         presetDirty = true
         eqA.reset()
         eqB.reset()
@@ -164,7 +176,6 @@ class FlightDeckDsp : BaseAudioProcessor() {
         // 50 = unity, 100 = +24 dB, 0 = -24 dB.
         val gainDb = (gain - 50) / 50.0 * 24.0
         val gainLinear = Math.pow(10.0, gainDb / 20.0)
-        val threshold = squelch / 100.0 * 0.25 // full scale 1.0 is far louder than any ATC feed
         val step = if (channels > 0) channels else 1
 
         var sumSquares = 0.0
@@ -179,22 +190,18 @@ class FlightDeckDsp : BaseAudioProcessor() {
             for (c in 0 until step) frameSum += shorts[i + c] / 32768.0
             val mono = frameSum / step
             val magnitude = if (mono < 0) -mono else mono
-            envelope = if (magnitude > envelope) magnitude else envelope * 0.9995
-            val gated = gateEnabled && envelope < threshold
-            if (!gated) open = true
+            val multiplier = gate.process(magnitude)
+            if (multiplier > 0.5) open = true
 
-            if (!(gated && trimSilence)) {
-                val multiplier = if (gated) 0.0 else 1.0
-                for (c in 0 until step) {
-                    var sample = shorts[i + c] / 32768.0
-                    sample = eqB.process(eqA.process(sample))
-                    sample *= gainLinear * multiplier
-                    if (sample > 1.0) sample = 1.0
-                    if (sample < -1.0) sample = -1.0
-                    shorts[written + c] = (sample * 32767.0).toInt().toShort()
-                }
-                written += step
+            for (c in 0 until step) {
+                var sample = shorts[i + c] / 32768.0
+                sample = eqB.process(eqA.process(sample))
+                sample *= gainLinear * multiplier
+                if (sample > 1.0) sample = 1.0
+                if (sample < -1.0) sample = -1.0
+                shorts[written + c] = (sample * 32767.0).toInt().toShort()
             }
+            written += step
 
             sumSquares += mono * mono
             frames++
@@ -223,7 +230,7 @@ class FlightDeckDsp : BaseAudioProcessor() {
     override fun onFlush() {
         eqA.reset()
         eqB.reset()
-        envelope = 0.0
+        gate.reset()
         _level.value = 0f
         _gateOpen.value = false
     }

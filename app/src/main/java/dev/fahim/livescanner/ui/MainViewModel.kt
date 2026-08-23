@@ -926,7 +926,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val next = !_audio.value.trimSilence
         prefs.trimSilence = next
         _audio.update { it.copy(trimSilence = next) }
-        pushDspSettings()
     }
 
     fun toggleDuckForNav() {
@@ -946,7 +945,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         dsp.gain = state.gain
         dsp.squelch = state.squelch
         dsp.gateEnabled = state.noiseGate
-        dsp.trimSilence = state.trimSilence
         dsp.preset = state.eq
     }
 
