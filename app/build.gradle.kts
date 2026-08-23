@@ -106,4 +106,6 @@ dependencies {
     implementation(libs.kotlinx.coroutines.guava)
     implementation(libs.guava)
     implementation(libs.coil.compose)
+
+    testImplementation(libs.junit)
 }

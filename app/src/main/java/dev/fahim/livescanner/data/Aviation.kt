@@ -118,10 +118,23 @@ private fun digitsFromWords(tokens: List<String>): String {
 }
 
 /**
- * A transcript with spoken numbers and phonetic letters resolved, so plain substring matching
- * has a chance: "November four two five kilo hotel" → "N425KH".
+ * A transcript with spoken numbers resolved to digits: "Delta four fifty" → "DELTA 450".
+ *
+ * Phonetics are deliberately left alone here. Several letters of the phonetic alphabet are also
+ * ordinary words on the radio — "Delta" above all, which is both the letter D and one of the
+ * largest airlines in the country. Collapsing it would turn every Delta callsign into "D450" and
+ * quietly stop the airline matching at all. Use [normalizeSpelledOut] when a spelled identifier is
+ * what you are after.
  */
-fun normalizeTranscript(transcript: String): String {
+fun normalizeTranscript(transcript: String): String = normalize(transcript, collapsePhonetics = false)
+
+/**
+ * As [normalizeTranscript], but also folds runs of phonetic letters back into the identifier they
+ * spell: "November four two five kilo hotel" → "N 425 KH".
+ */
+fun normalizeSpelledOut(transcript: String): String = normalize(transcript, collapsePhonetics = true)
+
+private fun normalize(transcript: String, collapsePhonetics: Boolean): String {
     val tokens = transcript.uppercase()
         .replace(Regex("[^A-Z0-9 -]"), " ")
         .split(Regex("\\s+"))
@@ -140,7 +153,7 @@ fun normalizeTranscript(transcript: String): String {
                 i = end
             }
 
-            PHONETIC.containsKey(token) -> {
+            collapsePhonetics && PHONETIC.containsKey(token) -> {
                 while (i < tokens.size && PHONETIC.containsKey(tokens[i])) {
                     out.append(PHONETIC[tokens[i]])
                     i++
@@ -185,16 +198,18 @@ fun normalizeFlightNumber(input: String): String? {
  */
 fun transcriptMentionsCallsign(transcript: String, icaoCallsign: String): Boolean {
     val target = icaoCallsign.uppercase().replace(" ", "")
-    val normalized = normalizeTranscript(transcript)
-    val compact = normalized.replace(" ", "")
-    if (target in compact) return true
+    // Both readings are needed: a tail number is spelled phonetically, while an airline name can
+    // itself be a phonetic word. Neither normalisation alone catches both.
+    val spoken = normalizeTranscript(transcript).replace(" ", "")
+    val spelled = normalizeSpelledOut(transcript).replace(" ", "")
+    if (target in spoken || target in spelled) return true
 
     val split = Regex("^([A-Z]{3})(\\d{1,4})$").find(target) ?: return false
     val (prefix, number) = split.destructured
 
     val spokenName = AIRLINES[prefix]?.substringBefore(" (")?.uppercase()
-    if (spokenName != null && "$spokenName$number" in compact) return true
+    if (spokenName != null && "$spokenName$number" in spoken) return true
 
     val iata = IATA_TO_ICAO.entries.firstOrNull { it.value == prefix }?.key
-    return iata != null && "$iata$number" in compact
+    return iata != null && ("$iata$number" in spoken || "$iata$number" in spelled)
 }
