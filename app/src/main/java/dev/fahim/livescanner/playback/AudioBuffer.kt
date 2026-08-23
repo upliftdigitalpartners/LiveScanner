@@ -1,6 +1,5 @@
 package dev.fahim.livescanner.playback
 
-import android.content.Context
 import android.util.Log
 import java.io.DataInputStream
 import java.io.DataOutputStream
@@ -20,9 +19,18 @@ import java.io.RandomAccessFile
  * partial; MP3 and ADTS decoders resync at the next frame header, which costs a few milliseconds
  * at the head of a replay and is not audible.
  */
-class AudioBuffer(context: Context) {
+class AudioBuffer(
+    private val dir: File,
+    /** Ring size. Overridable so tests can exercise wrap-around without writing 16 MB. */
+    private val capacity: Long = DEFAULT_CAPACITY,
+    /** How often a time/offset sample is taken. Overridable so tests need not sleep. */
+    private val indexIntervalMs: Long = DEFAULT_INDEX_INTERVAL_MS,
+) {
 
-    private val dir = File(context.cacheDir, "rings").apply { mkdirs() }
+    init {
+        dir.mkdirs()
+    }
+
     private val lock = Any()
 
     private var raf: RandomAccessFile? = null
@@ -39,7 +47,7 @@ class AudioBuffer(context: Context) {
 
     /** Absolute offset of the oldest byte still retained. */
     val oldestRetained: Long
-        get() = (totalWritten - CAPACITY).coerceAtLeast(0L)
+        get() = (totalWritten - capacity).coerceAtLeast(0L)
 
     /** True when the ring holds audio from a previous session. */
     val hasHistory: Boolean
@@ -73,7 +81,7 @@ class AudioBuffer(context: Context) {
     private fun openLocked() {
         val id = feedId ?: return
         try {
-            raf = RandomAccessFile(ringFile(id), "rw").apply { setLength(CAPACITY) }
+            raf = RandomAccessFile(ringFile(id), "rw").apply { setLength(capacity) }
             loadIndexLocked(id)
             pruneOldRings()
         } catch (t: Throwable) {
@@ -101,8 +109,8 @@ class AudioBuffer(context: Context) {
             try {
                 var written = 0
                 while (written < length) {
-                    val pos = ((totalWritten + written) % CAPACITY).toInt()
-                    val chunk = minOf(length - written, CAPACITY.toInt() - pos)
+                    val pos = ((totalWritten + written) % capacity).toInt()
+                    val chunk = minOf(length - written, capacity.toInt() - pos)
                     f.seek(pos.toLong())
                     f.write(data, offset + written, chunk)
                     written += chunk
@@ -118,7 +126,7 @@ class AudioBuffer(context: Context) {
     private fun stampIndexLocked() {
         val now = System.currentTimeMillis()
         val last = index.lastOrNull()
-        if (last != null && now - last.first < INDEX_INTERVAL_MS) return
+        if (last != null && now - last.first < indexIntervalMs) return
         index.addLast(now to totalWritten)
         while (index.size > INDEX_MAX) index.removeFirst()
         if (++stampsSinceFlush >= FLUSH_EVERY) {
@@ -137,8 +145,8 @@ class AudioBuffer(context: Context) {
                 val out = ByteArray(length)
                 var read = 0
                 while (read < length) {
-                    val pos = ((from + read) % CAPACITY).toInt()
-                    val chunk = minOf(length - read, CAPACITY.toInt() - pos)
+                    val pos = ((from + read) % capacity).toInt()
+                    val chunk = minOf(length - read, capacity.toInt() - pos)
                     f.seek(pos.toLong())
                     f.readFully(out, read, chunk)
                     read += chunk
@@ -266,11 +274,11 @@ class AudioBuffer(context: Context) {
         override fun hashCode(): Int = 31 * offset.hashCode() + bytes.contentHashCode()
     }
 
-    private companion object {
+    internal companion object {
         const val TAG = "AudioBuffer"
         /** 16 MB covers 30 minutes at up to ~70 kbps; typical ATC feeds run far below that. */
-        const val CAPACITY = 16L * 1024 * 1024
-        const val INDEX_INTERVAL_MS = 1_000L
+        const val DEFAULT_CAPACITY = 16L * 1024 * 1024
+        const val DEFAULT_INDEX_INTERVAL_MS = 1_000L
         const val INDEX_MAX = 2_400
         const val FLUSH_EVERY = 60
         const val MAX_RINGS = 3

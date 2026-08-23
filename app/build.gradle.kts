@@ -76,6 +76,12 @@ android {
         disable += "UnsafeOptInUsageError"
     }
 
+    testOptions {
+        // AudioBuffer logs on its failure paths; without this the stub android.jar throws
+        // "not mocked" the moment a test exercises one.
+        unitTests.isReturnDefaultValues = true
+    }
+
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"

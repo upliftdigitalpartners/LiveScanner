@@ -35,7 +35,7 @@ class AppContainer(app: Application) {
     private val catalog = FeedCatalog(app)
     val repository = FeedRepository(catalog, prefs)
     val locationProvider = LocationProvider(app)
-    val audioBuffer = AudioBuffer(app)
+    val audioBuffer = AudioBuffer(java.io.File(app.cacheDir, "rings"))
     val dsp = FlightDeckDsp()
     val replayPlayer = ReplayPlayer(app)
     val secondaryRadio = SecondaryRadio(app)
