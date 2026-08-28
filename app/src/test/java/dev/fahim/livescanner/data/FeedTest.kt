@@ -38,10 +38,16 @@ class FeedTest {
     }
 
     @Test
-    fun `Charlotte's three mounts share one code, which is what failover groups on`() {
-        val codes = listOf("liveatc:kclt_twr", "liveatc:kclt1", "liveatc:kclt2")
-            .map { liveatc(it).displayCode }
-            .toSet()
+    fun `Charlotte's mounts share one code, which is what failover groups on`() {
+        // These are LiveATC's real KCLT mount names. They carry a receiver number and the
+        // frequency, so the ICAO has to survive both — the catalog shipped for months with
+        // invented mounts (kclt_twr, kclt1, kclt2) that no LiveATC server has ever served.
+        val codes = listOf(
+            "liveatc:kclt7_twr_118100",
+            "liveatc:kclt7_dep_119000",
+            "liveatc:kclt7_dep_120500",
+            "liveatc:kclt4_arr",
+        ).map { liveatc(it).displayCode }.toSet()
         assertEquals(setOf("KCLT"), codes)
     }
 
