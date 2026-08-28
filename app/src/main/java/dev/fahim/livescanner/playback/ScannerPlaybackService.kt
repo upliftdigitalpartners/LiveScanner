@@ -7,7 +7,6 @@ import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.datasource.DataSource
-import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.datasource.ResolvingDataSource
 import androidx.media3.datasource.TeeDataSource
 import androidx.media3.exoplayer.DefaultRenderersFactory
@@ -47,11 +46,7 @@ class ScannerPlaybackService : MediaLibraryService() {
         tree = MediaItemTree(repository, container.locationProvider)
         audioBuffer = container.audioBuffer
 
-        val httpFactory = DefaultHttpDataSource.Factory()
-            .setUserAgent("LiveScanner/0.1 (Android)")
-            .setAllowCrossProtocolRedirects(true) // LiveATC 302-redirects to a node host
-            .setConnectTimeoutMs(20_000)
-            .setReadTimeoutMs(20_000)
+        val httpFactory = LiveAtcSources.streamFactory()
 
         // Inject Broadcastify Premium auth only for broadcastify.com hosts, only when configured.
         val dataSourceFactory = ResolvingDataSource.Factory(httpFactory) { dataSpec ->
@@ -68,10 +63,14 @@ class ScannerPlaybackService : MediaLibraryService() {
             }
         }
 
+        // Find the edge that currently carries the mount, rather than trusting the one URL the
+        // catalog shipped with. Sits above the auth resolver so Broadcastify headers still apply.
+        val liveAtcFactory = LiveAtcSources.resolving(dataSourceFactory)
+
         // Tee every byte into the rolling buffer on its way to the decoder, so the recorder and
         // live transcription read the same stream the speaker does — one connection, not two.
         val teeFactory = DataSource.Factory {
-            TeeDataSource(dataSourceFactory.createDataSource(), BufferSink(audioBuffer))
+            TeeDataSource(liveAtcFactory.createDataSource(), BufferSink(audioBuffer))
         }
 
         val audioAttributes = AudioAttributes.Builder()

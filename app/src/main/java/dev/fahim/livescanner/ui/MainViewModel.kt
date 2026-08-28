@@ -252,6 +252,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
             lastError = when (error.errorCode) {
                 // LiveATC/Broadcastify return 404 when a feed's source is offline.
+                // By the time this surfaces, every LiveATC edge carrying the mount has already
+                // been tried (see LiveAtcDataSource), so the feed really is dark — not merely
+                // missing from the one host the catalog happens to name.
                 PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS,
                 PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND,
                 -> if (allSourcesOffline) {

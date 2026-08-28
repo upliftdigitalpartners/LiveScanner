@@ -4,7 +4,6 @@ import android.content.Context
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
-import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import dev.fahim.livescanner.data.Feed
@@ -32,11 +31,8 @@ class SecondaryRadio(private val context: Context) {
 
     private fun ensurePlayer(): ExoPlayer {
         player?.let { return it }
-        val httpFactory = DefaultHttpDataSource.Factory()
-            .setUserAgent("LiveScanner/0.1 (Android)")
-            .setAllowCrossProtocolRedirects(true)
-            .setConnectTimeoutMs(20_000)
-            .setReadTimeoutMs(20_000)
+        // Same LiveATC edge resolution as COMM 1, so a feed that plays there plays here too.
+        val httpFactory = LiveAtcSources.resolving(LiveAtcSources.streamFactory())
 
         return ExoPlayer.Builder(context)
             .setMediaSourceFactory(DefaultMediaSourceFactory(httpFactory))
