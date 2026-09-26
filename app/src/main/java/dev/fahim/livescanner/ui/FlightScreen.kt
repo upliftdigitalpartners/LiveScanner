@@ -244,8 +244,12 @@ private fun FactGrid(flight: FlightUiState) {
             FactTile(
                 label = "GATE",
                 value = flight.gate ?: "—",
-                // Nothing in ADS-B carries a gate. If it hasn't been said, we don't know it.
-                note = if (flight.gate != null) "HEARD ON THE RADIO" else "NOT ASSIGNED YET",
+                note = when (flight.gateSource) {
+                    // ADS-B has no gate field; this one is the stand it actually parked on.
+                    FactSource.ADSB -> "PARKED THERE"
+                    FactSource.RADIO -> "HEARD ON THE RADIO"
+                    null -> "NOT ASSIGNED YET"
+                },
                 known = flight.gate != null,
                 modifier = Modifier.weight(1f),
             )

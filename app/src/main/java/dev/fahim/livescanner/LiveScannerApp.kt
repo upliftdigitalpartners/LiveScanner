@@ -6,6 +6,7 @@ import dev.fahim.livescanner.data.FeedRepository
 import dev.fahim.livescanner.data.LocationProvider
 import dev.fahim.livescanner.data.UserPrefs
 import dev.fahim.livescanner.data.Coastline
+import dev.fahim.livescanner.data.Gates
 import dev.fahim.livescanner.data.Runways
 import dev.fahim.livescanner.playback.AlertNotifier
 import dev.fahim.livescanner.playback.AudioBuffer
@@ -43,4 +44,5 @@ class AppContainer(app: Application) {
     val notifier = AlertNotifier(app).apply { ensureChannel() }
     val coastline = Coastline(app)
     val runways = Runways(app)
+    val gates = Gates(app)
 }
