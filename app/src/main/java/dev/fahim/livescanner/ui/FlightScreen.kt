@@ -30,7 +30,12 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import dev.fahim.livescanner.data.Aircraft
+import dev.fahim.livescanner.data.Compliance
 import dev.fahim.livescanner.data.FactSource
+import dev.fahim.livescanner.data.Instruction
+import dev.fahim.livescanner.data.InstructionKind
+import dev.fahim.livescanner.data.complianceOf
 import dev.fahim.livescanner.data.FlightPhase
 import dev.fahim.livescanner.data.Transmission
 import dev.fahim.livescanner.ui.theme.B612Mono
@@ -91,6 +96,9 @@ fun FlightScreen(vm: MainViewModel, onBack: () -> Unit) {
             if (flight.following) {
                 IdentityCard(flight)
                 FactGrid(flight)
+                if (flight.instructions.isNotEmpty()) {
+                    InstructionCard(flight.instructions, flight.aircraft)
+                }
                 ChatterCard(
                     transmissions = flight.transmissions,
                     callsign = flight.callsign,
@@ -231,6 +239,62 @@ private fun accentFor(phase: FlightPhase): FdAccent = when (phase) {
     FlightPhase.APPROACH, FlightPhase.DEPARTURE -> FdAccent.GREEN
     FlightPhase.PARKED, FlightPhase.TAXI -> FdAccent.AMBER
     else -> FdAccent.NEUTRAL
+}
+
+/**
+ * What the flight has been told to do, and whether it has done it.
+ *
+ * This is the one card that needs both halves of the app: the instruction comes off the radio,
+ * the answer to "has it complied?" comes off the transponder. Neither source shows it alone.
+ */
+@Composable
+private fun InstructionCard(instructions: Map<InstructionKind, Instruction>, aircraft: Aircraft?) {
+    val p = FlightDeck
+    PanelCard(Modifier.fillMaxWidth()) {
+        SectionLabel("CLEARED TO", Modifier.padding(bottom = 4.dp))
+        // Fixed order, so a readout glanced at from a car doesn't reshuffle between transmissions.
+        InstructionKind.entries.forEach { kind ->
+            val instruction = instructions[kind] ?: return@forEach
+            val compliance = complianceOf(instruction, aircraft)
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(top = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                PanelText(
+                    kind.label,
+                    modifier = Modifier.width(46.dp),
+                    color = p.textGhost,
+                    size = FdType.sectionLabel,
+                    maxLines = 1,
+                )
+                PanelText(
+                    instruction.value,
+                    modifier = Modifier.weight(1f),
+                    color = p.textHi,
+                    bold = true,
+                    size = FdType.rowTitle,
+                    maxLines = 1,
+                )
+                when (compliance) {
+                    // "WORKING" rather than a failure: an aircraft mid-turn has not disobeyed
+                    // anything, it just hasn't got there yet.
+                    Compliance.MET -> FdChip("ESTABLISHED", FdAccent.GREEN)
+                    Compliance.WORKING -> FdChip(nowLabel(kind, aircraft), FdAccent.AMBER)
+                    Compliance.UNKNOWN -> Unit
+                }
+            }
+        }
+    }
+}
+
+/** What the aircraft is actually doing, for the instruction it hasn't settled onto yet. */
+private fun nowLabel(kind: InstructionKind, ac: Aircraft?): String = when (kind) {
+    InstructionKind.ALTITUDE -> ac?.altitudeFt?.let { "AT $it" } ?: "WORKING"
+    InstructionKind.HEADING -> ac?.let { "AT ${it.trackDeg.toInt().toString().padStart(3, '0')}" } ?: "WORKING"
+    InstructionKind.SPEED -> ac?.let { "AT ${it.groundSpeedKt.toInt()}" } ?: "WORKING"
+    else -> "WORKING"
 }
 
 /** Runway, gate, heading, range — the four things worth a glance. */

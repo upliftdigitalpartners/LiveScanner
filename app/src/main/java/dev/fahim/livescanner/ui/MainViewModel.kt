@@ -33,7 +33,10 @@ import dev.fahim.livescanner.data.bearingPhrase
 import dev.fahim.livescanner.data.bearingTo
 import dev.fahim.livescanner.data.compassPoint
 import dev.fahim.livescanner.data.friendlyType
+import dev.fahim.livescanner.data.Instruction
+import dev.fahim.livescanner.data.InstructionKind
 import dev.fahim.livescanner.data.gateFromTranscript
+import dev.fahim.livescanner.data.instructionsFrom
 import dev.fahim.livescanner.data.matchRunway
 import dev.fahim.livescanner.data.normalizeFlightNumber
 import dev.fahim.livescanner.data.phaseOf
@@ -150,6 +153,14 @@ data class FlightUiState(
     val lastContactMs: Long = 0L,
     /** Set when a typed query could not be read as a flight number. */
     val error: String? = null,
+    /**
+     * The latest instruction of each kind heard for this flight.
+     *
+     * Keyed by kind so a new altitude replaces the old one rather than piling up — a controller
+     * who says "descend and maintain three thousand" has superseded the five thousand from two
+     * minutes ago, and showing both would be worse than showing neither.
+     */
+    val instructions: Map<InstructionKind, Instruction> = emptyMap(),
     /** Transmission currently being replayed from this panel, if any. */
     val playingId: String? = null,
     val playingPct: Int = 0,
@@ -574,9 +585,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         // really has an 18L, which is the whole reason the runway list is consulted here.
         val heardRunway = runwayFromTranscript(entry.raw)?.takeIf { validRunway(it, ends) }
         val heardGate = gateFromTranscript(entry.raw)
-        if (heardRunway == null && heardGate == null) return
+        val heard = instructionsFrom(entry.raw)
+        if (heardRunway == null && heardGate == null && heard.isEmpty()) return
         _flight.update { state ->
             state.copy(
+                instructions = state.instructions + heard.associateBy { it.kind },
                 runway = if (state.runwaySource == FactSource.ADSB) state.runway
                     else heardRunway ?: state.runway,
                 runwaySource = when {
