@@ -148,6 +148,7 @@ fun RadarScreen(vm: MainViewModel, onBack: () -> Unit) {
                 )
                 CornerReadouts(
                     approachBearing = radar.approachBearing,
+                    polling = playback.isPlaying,
                     modifier = Modifier.align(Alignment.TopStart).padding(FdDim.gutter),
                 )
                 // Offset scope: offer the way back rather than stranding the user off-field.
@@ -261,18 +262,21 @@ private fun HeadingTape(rotationDeg: Float, trackUp: Boolean) {
 }
 
 @Composable
-private fun CornerReadouts(approachBearing: Float?, modifier: Modifier) {
+private fun CornerReadouts(approachBearing: Float?, polling: Boolean, modifier: Modifier) {
     val p = FlightDeck
     Row(modifier.fillMaxWidth()) {
         Column(Modifier.weight(1f)) {
-            SectionLabel("GS 000", color = p.green)
-            SectionLabel("WX VFR", color = p.green)
+            // Only the approach bearing goes here now. This corner used to also carry "GS 000"
+            // and "WX VFR", which were static text: the app has never had a ground speed or a
+            // weather source, so they read as measurements while being neither. An empty corner
+            // is better than a scope that asserts the field is VFR in any conditions.
             approachBearing?.let {
                 SectionLabel("APP ${it.roundToInt().toString().padStart(3, '0')}", color = p.green)
             }
         }
         Column(horizontalAlignment = Alignment.End) {
-            SectionLabel("ADSB LIVE", color = p.cyan)
+            // Polling stops when playback pauses, so this cannot always claim to be live.
+            SectionLabel(if (polling) "ADSB LIVE" else "ADSB HOLD", color = if (polling) p.cyan else p.textFaint)
             SectionLabel("5.0S POLL", color = p.cyan)
         }
     }

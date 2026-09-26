@@ -150,6 +150,9 @@ data class FlightUiState(
     val lastContactMs: Long = 0L,
     /** Set when a typed query could not be read as a flight number. */
     val error: String? = null,
+    /** Transmission currently being replayed from this panel, if any. */
+    val playingId: String? = null,
+    val playingPct: Int = 0,
 ) {
     val following: Boolean get() = callsign != null
 
@@ -499,6 +502,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 transcriptMentionsCallsign(it.raw, resolved) }
             .take(MAX_FLIGHT_TRANSMISSIONS)
 
+        replayPlayer.stop()
         _flight.value = FlightUiState(query = resolved, callsign = resolved, transmissions = past)
         past.forEach(::applyHeardFacts)
         refreshFlight(_radar.value.aircraft)
@@ -506,6 +510,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun clearFlight() {
+        replayPlayer.stop()
         _flight.value = FlightUiState()
         publishTracked()
     }
@@ -988,10 +993,18 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Plays a recorded transmission, optionally from a word offset inside it. */
     fun replay(id: String, fromMs: Long = 0L) {
-        val entry = _history.value.transmissions.firstOrNull { it.id == id } ?: return
+        // The flight panel keeps its own, longer-lived list: a busy field can push a followed
+        // flight's earlier transmissions out of the 200-entry recorder while they are still on
+        // screen under the flight. Looking in both is what stops those rows going silent.
+        val entry = _history.value.transmissions.firstOrNull { it.id == id }
+            ?: _flight.value.transmissions.firstOrNull { it.id == id }
+            ?: return
         val offset = entry.bufferOffset ?: return
         val bytes = audioBuffer.segment(offset, entry.bufferLength) ?: return
         replayPlayer.play(id, bytes, fromMs)
+        if (_flight.value.transmissions.any { it.id == id }) {
+            _flight.update { it.copy(playingId = id, playingPct = 0) }
+        }
         startReplayTracking()
     }
 
@@ -1009,16 +1022,19 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 replayPlayer.refreshPosition()
                 val position = replayPlayer.positionMs.value
                 val duration = replayPlayer.durationMs.value
+                val pct = if (duration > 0) (position * 100 / duration).toInt() else 0
                 _history.update {
                     it.copy(
                         replayPositionMs = position,
                         replayDurationMs = duration,
-                        replayPct = if (duration > 0) (position * 100 / duration).toInt() else 0,
+                        replayPct = pct,
                     )
                 }
+                if (_flight.value.playingId != null) _flight.update { it.copy(playingPct = pct) }
                 delay(REPLAY_TICK_MS)
             }
             _history.update { it.copy(replayPct = 0, replayPositionMs = 0L) }
+            _flight.update { it.copy(playingId = null, playingPct = 0) }
         }
     }
 

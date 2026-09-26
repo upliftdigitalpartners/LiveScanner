@@ -1,6 +1,7 @@
 package dev.fahim.livescanner.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -8,6 +9,8 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
@@ -88,7 +91,13 @@ fun FlightScreen(vm: MainViewModel, onBack: () -> Unit) {
             if (flight.following) {
                 IdentityCard(flight)
                 FactGrid(flight)
-                ChatterCard(flight.transmissions, flight.callsign)
+                ChatterCard(
+                    transmissions = flight.transmissions,
+                    callsign = flight.callsign,
+                    playingId = flight.playingId,
+                    playingPct = flight.playingPct,
+                    onReplay = vm::replay,
+                )
             }
         }
     }
@@ -298,9 +307,15 @@ private fun FactTile(
     }
 }
 
-/** Only this flight's transmissions, newest first. */
+/** Only this flight's transmissions, newest first. Tap one to hear it. */
 @Composable
-private fun ChatterCard(transmissions: List<Transmission>, callsign: String?) {
+private fun ChatterCard(
+    transmissions: List<Transmission>,
+    callsign: String?,
+    playingId: String?,
+    playingPct: Int,
+    onReplay: (String) -> Unit,
+) {
     val p = FlightDeck
     PanelCard(Modifier.fillMaxWidth()) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -312,7 +327,7 @@ private fun ChatterCard(transmissions: List<Transmission>, callsign: String?) {
             PanelText(
                 "Nothing heard yet. Transmissions naming ${callsign ?: "this flight"} appear here " +
                     "as they are transcribed — including when it is called by name, like " +
-                    "\"Delta four fifty\".",
+                    "\"Delta four fifty\". Tap one to hear it.",
                 modifier = Modifier.padding(top = 10.dp),
                 color = p.textFaint,
                 size = FdType.control,
@@ -321,19 +336,60 @@ private fun ChatterCard(transmissions: List<Transmission>, callsign: String?) {
         }
 
         transmissions.forEach { entry ->
+            val playing = entry.id == playingId
+            // Clips age out of the rolling buffer; without audio behind it the row is still
+            // worth reading, it just isn't worth offering as a button.
+            val playable = entry.bufferOffset != null
             Column(
                 Modifier
                     .fillMaxWidth()
+                    .then(if (playable) Modifier.clickable { onReplay(entry.id) } else Modifier)
+                    // Comfortably tappable from a car without stretching short rows.
+                    .heightIn(min = 56.dp)
                     .padding(top = 12.dp),
             ) {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     PanelText(entry.clockLabel, color = p.textGhost, size = FdType.sectionLabel, maxLines = 1)
                     Spacer(Modifier.width(8.dp))
                     PanelText(entry.feedLabel, color = p.textFaint, size = FdType.sectionLabel, maxLines = 1)
+                    Spacer(Modifier.weight(1f))
+                    PanelText(
+                        when {
+                            playing -> "PLAYING"
+                            playable -> "TAP TO PLAY"
+                            else -> "AGED OUT"
+                        },
+                        color = if (playing) p.green else p.textGhost,
+                        size = FdType.sectionLabel,
+                        maxLines = 1,
+                    )
                 }
-                PanelText(entry.raw, Modifier.padding(top = 4.dp), color = p.text, size = FdType.body)
+                PanelText(
+                    entry.raw,
+                    Modifier.padding(top = 4.dp),
+                    color = if (playing) p.textHi else p.text,
+                    size = FdType.body,
+                )
                 entry.plainEnglish?.let {
                     PanelText(it, Modifier.padding(top = 3.dp), color = p.cyan, size = FdType.paraphrase)
+                }
+                if (playing) {
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(top = 6.dp)
+                            .height(2.dp)
+                            .background(p.strokeDim),
+                    ) {
+                        Box(
+                            Modifier
+                                // Never zero-width: a playhead that vanishes at the start reads
+                                // as the tap having done nothing.
+                                .fillMaxWidth((playingPct / 100f).coerceIn(0.02f, 1f))
+                                .height(2.dp)
+                                .background(p.green),
+                        )
+                    }
                 }
             }
         }
