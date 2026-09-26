@@ -124,6 +124,10 @@ fun AppRoot(vm: MainViewModel) {
                     RadarScreen(vm = vm, onBack = { vm.goTo(Screen.HOME) })
                 }
 
+                Screen.FLIGHT -> Box(parallax.statusBarsPadding()) {
+                    FlightScreen(vm = vm, onBack = { vm.goTo(Screen.HOME) })
+                }
+
                 Screen.HISTORY -> Box(parallax.statusBarsPadding()) {
                     HistoryScreen(vm = vm, onBack = { vm.goTo(Screen.HOME) })
                 }

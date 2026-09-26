@@ -25,7 +25,21 @@ import dev.fahim.livescanner.data.RuleType
 import dev.fahim.livescanner.data.Transmission
 import dev.fahim.livescanner.data.TranscriptWord
 import dev.fahim.livescanner.data.AdsbClient
+import dev.fahim.livescanner.data.Bearing
+import dev.fahim.livescanner.data.FactSource
+import dev.fahim.livescanner.data.FlightPhase
+import dev.fahim.livescanner.data.airlineName
+import dev.fahim.livescanner.data.bearingPhrase
+import dev.fahim.livescanner.data.bearingTo
+import dev.fahim.livescanner.data.compassPoint
+import dev.fahim.livescanner.data.friendlyType
+import dev.fahim.livescanner.data.gateFromTranscript
+import dev.fahim.livescanner.data.matchRunway
 import dev.fahim.livescanner.data.normalizeFlightNumber
+import dev.fahim.livescanner.data.phaseOf
+import dev.fahim.livescanner.data.runwayFromTranscript
+import dev.fahim.livescanner.data.transcriptMentionsCallsign
+import dev.fahim.livescanner.data.validRunway
 import dev.fahim.livescanner.data.priorityFor
 import dev.fahim.livescanner.playback.EqPreset
 import dev.fahim.livescanner.playback.ScannerPlaybackService
@@ -44,7 +58,7 @@ import kotlin.math.roundToInt
 import kotlin.math.sin
 
 /** The five pages of the horizontal filmstrip. */
-enum class Screen { HOME, RADAR, HISTORY, ALERTS, AUDIO }
+enum class Screen { HOME, RADAR, FLIGHT, HISTORY, ALERTS, AUDIO }
 
 /** Soft keys along the bottom of the comm panel. */
 enum class FeedTab(val label: String) { NRST("NRST"), ATC("ATC"), SCAN("SCAN"), FAV("FAV") }
@@ -101,6 +115,53 @@ data class RadarUiState(
     /** Degrees the whole picture is rotated by. Track-up puts the active approach at the top. */
     val rotationDeg: Float
         get() = if (trackUp) -(approachBearing ?: 0f) else 0f
+}
+
+/**
+ * One flight, followed on its own.
+ *
+ * The rest of the app watches a field and everything in it; this watches a single aircraft and
+ * throws away everything else — its track, the runway it is using, the gate it is going to, and
+ * only the transmissions that are about it.
+ *
+ * Gate and runway come from two different places on purpose. The transponder knows where the
+ * aircraft is, so the runway can be derived from its position the moment it lines up. Nothing in
+ * ADS-B carries a gate — but ground control says it out loud, usually minutes before the aircraft
+ * gets there, so for that fact the radio is the only source and also the earliest one.
+ */
+data class FlightUiState(
+    /** Exactly what the user typed, so the field never fights them while they type. */
+    val query: String = "",
+    /** The ICAO callsign being followed once the query resolved, e.g. "DAL450". */
+    val callsign: String? = null,
+    /** Live contact, or null when the flight is out of the field's ADS-B range. */
+    val aircraft: Aircraft? = null,
+    val phase: FlightPhase = FlightPhase.UNKNOWN,
+    /** Range and direction from the tuned field. */
+    val bearing: Bearing? = null,
+    val runway: String? = null,
+    val runwaySource: FactSource? = null,
+    val gate: String? = null,
+    /** Transmissions addressed to this flight, newest first. */
+    val transmissions: List<Transmission> = emptyList(),
+    /** Live callsigns matching what has been typed so far. */
+    val suggestions: List<String> = emptyList(),
+    /** When ADS-B last had this aircraft, for the "no contact" notice. */
+    val lastContactMs: Long = 0L,
+    /** Set when a typed query could not be read as a flight number. */
+    val error: String? = null,
+) {
+    val following: Boolean get() = callsign != null
+
+    /** Heading in words: "SE" plus the degrees, which is how a readout is usually spoken. */
+    val headingLabel: String?
+        get() = aircraft?.let { "${compassPoint(it.trackDeg)} ${it.trackDeg.roundToInt()}°" }
+
+    /** "12 NM NW" from the field, or null when there is no contact. */
+    val positionLabel: String? get() = bearing?.let(::bearingPhrase)
+
+    val airline: String? get() = airlineName(callsign)
+    val aircraftType: String? get() = friendlyType(aircraft?.type)
 }
 
 data class HistoryUiState(
@@ -163,6 +224,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val replayPlayer = container.replayPlayer
     private val secondaryRadio = container.secondaryRadio
     val coastline = container.coastline
+    private val runways = container.runways
 
     /** Which feed COMM 2 is monitoring, or null when the second radio is off. */
     val comm2FeedId: StateFlow<String?> = secondaryRadio.feedId
@@ -189,6 +251,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _history = MutableStateFlow(HistoryUiState())
     val history: StateFlow<HistoryUiState> = _history.asStateFlow()
+
+    private val _flight = MutableStateFlow(FlightUiState())
+    val flight: StateFlow<FlightUiState> = _flight.asStateFlow()
 
     private val _alerts = MutableStateFlow(AlertsUiState(rules = prefs.loadRules()))
     val alerts: StateFlow<AlertsUiState> = _alerts.asStateFlow()
@@ -393,6 +458,132 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         pushState()
     }
 
+    // ── Following one flight ─────────────────────────────────────────────────────────────────
+
+    /** Live callsigns matching what has been typed, for the search suggestions. */
+    fun setFlightQuery(text: String) {
+        val typed = text.trim().uppercase()
+        val resolved = normalizeFlightNumber(typed)
+        val suggestions = if (typed.length < MIN_QUERY_CHARS) {
+            emptyList()
+        } else {
+            _radar.value.aircraft
+                .mapNotNull { it.callsign?.trim()?.uppercase() }
+                .distinct()
+                // Matches what was typed either literally ("DAL4") or once read as a flight
+                // number ("DL450" -> DAL450), so both forms find the same aircraft.
+                .filter { it.startsWith(typed) || (resolved != null && it.startsWith(resolved)) }
+                .sorted()
+                .take(CAR_LIST_MAX)
+        }
+        _flight.update { it.copy(query = text, suggestions = suggestions, error = null) }
+    }
+
+    /**
+     * Starts following a flight. Accepts anything [normalizeFlightNumber] understands — "DL450",
+     * "United 328", "UAL328" — and falls back to treating the input as a tail number.
+     */
+    fun followFlight(input: String = _flight.value.query) {
+        val typed = input.trim().uppercase()
+        val resolved = normalizeFlightNumber(typed)
+            ?: typed.takeIf { it.length >= MIN_CALLSIGN_CHARS && it.all { c -> c.isLetterOrDigit() } }
+        if (resolved.isNullOrBlank()) {
+            _flight.update { it.copy(error = "Enter a flight number like DL450, or a tail like N123DL") }
+            return
+        }
+
+        // Anything already said about this flight is worth showing immediately — following a
+        // flight halfway through its arrival shouldn't start from an empty panel.
+        val past = _history.value.transmissions
+            .filter { it.callsign?.equals(resolved, ignoreCase = true) == true ||
+                transcriptMentionsCallsign(it.raw, resolved) }
+            .take(MAX_FLIGHT_TRANSMISSIONS)
+
+        _flight.value = FlightUiState(query = resolved, callsign = resolved, transmissions = past)
+        past.forEach(::applyHeardFacts)
+        refreshFlight(_radar.value.aircraft)
+        publishTracked()
+    }
+
+    fun clearFlight() {
+        _flight.value = FlightUiState()
+        publishTracked()
+    }
+
+    /** Re-derives everything the transponder can tell us, once per ADS-B poll. */
+    private fun refreshFlight(contacts: List<Aircraft>) {
+        val callsign = _flight.value.callsign ?: return
+        val match = contacts.firstOrNull { it.callsign?.trim().equals(callsign, ignoreCase = true) }
+        val feed = _playback.value.feed
+        val field = if (feed?.hasCoordinates == true) LatLng(feed.lat!!, feed.lon!!) else null
+
+        _flight.update { state ->
+            if (match == null) {
+                // Out of range or between polls: keep the last known facts rather than blanking
+                // the panel, and let lastContactMs drive the staleness notice.
+                return@update state.copy(aircraft = null)
+            }
+            val bearing = field?.let { bearingTo(it.lat, it.lon, match) }
+            val observed = observedRunway(match, feed?.displayCode)
+            state.copy(
+                aircraft = match,
+                bearing = bearing,
+                phase = phaseOf(match, bearing?.distanceNm),
+                lastContactMs = System.currentTimeMillis(),
+                // Seeing the aircraft on a runway beats having heard one named: the clearance may
+                // have changed, or been for a different flight, and the track cannot be wrong.
+                runway = observed ?: state.runway,
+                runwaySource = if (observed != null) FactSource.ADSB else state.runwaySource,
+            )
+        }
+    }
+
+    /**
+     * The runway an aircraft is lined up with, or null.
+     *
+     * Guarded by altitude because the matcher only knows geometry: an airliner at cruise passing
+     * over the extended centreline is not landing, and without this it would be reported as if
+     * it were.
+     */
+    private fun observedRunway(ac: Aircraft, icao: String?): String? {
+        if (!ac.onGround && (ac.altitudeFt ?: Int.MAX_VALUE) > RUNWAY_MATCH_CEILING_FT) return null
+        return matchRunway(runways.endsFor(icao), ac.lat, ac.lon, ac.trackDeg)?.ident
+    }
+
+    /** Files a transmission under the followed flight when it is addressed to it. */
+    private fun noteFlightTransmission(entry: Transmission) {
+        val callsign = _flight.value.callsign ?: return
+        val mine = entry.callsign?.equals(callsign, ignoreCase = true) == true ||
+            transcriptMentionsCallsign(entry.raw, callsign)
+        if (!mine) return
+        _flight.update {
+            it.copy(transmissions = (listOf(entry) + it.transmissions).take(MAX_FLIGHT_TRANSMISSIONS))
+        }
+        applyHeardFacts(entry)
+    }
+
+    /** Pulls the gate and runway out of a transmission's words. */
+    private fun applyHeardFacts(entry: Transmission) {
+        val ends = runways.endsFor(_playback.value.feed?.displayCode)
+        // A misread like "runway one eight, left turn at the end" only survives if the field
+        // really has an 18L, which is the whole reason the runway list is consulted here.
+        val heardRunway = runwayFromTranscript(entry.raw)?.takeIf { validRunway(it, ends) }
+        val heardGate = gateFromTranscript(entry.raw)
+        if (heardRunway == null && heardGate == null) return
+        _flight.update { state ->
+            state.copy(
+                runway = if (state.runwaySource == FactSource.ADSB) state.runway
+                    else heardRunway ?: state.runway,
+                runwaySource = when {
+                    state.runwaySource == FactSource.ADSB -> FactSource.ADSB
+                    heardRunway != null -> FactSource.RADIO
+                    else -> state.runwaySource
+                },
+                gate = heardGate ?: state.gate,
+            )
+        }
+    }
+
     // ── Navigation ───────────────────────────────────────────────────────────────────────────
 
     fun goTo(target: Screen) { _screen.value = target }
@@ -548,6 +739,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                             approachBearing = inferApproachBearing(fresh) ?: it.approachBearing,
                         )
                     }
+                    refreshFlight(fresh)
                     entered.firstOrNull()?.let { pingContact(it) }
 
                     delay(ADSB_POLL_MS)
@@ -651,6 +843,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             )
 
             _history.update { it.copy(transmissions = (listOf(entry) + it.transmissions).take(MAX_HISTORY)) }
+            noteFlightTransmission(entry)
 
             val display = plain ?: text
             val hits = callsigns.map { it.trim().uppercase() }.toSet()
@@ -695,7 +888,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             .map { it.trim().uppercase() }
             .filter { it.isNotEmpty() }
             .toSet()
-        _radar.update { it.copy(tracked = tracked) }
+        // The followed flight is pinned on the scope too, without needing a rule armed for it.
+        val followed = _flight.value.callsign?.trim()?.uppercase()
+        _radar.update { it.copy(tracked = if (followed != null) tracked + followed else tracked) }
     }
 
     fun armRule(text: String) {
@@ -995,6 +1190,18 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         const val ALERT_MS = 6_000L
         const val MIN_CLIP_BYTES = 800
         const val MAX_HISTORY = 200
+
+        /** Transmissions kept for the followed flight; one arrival is nowhere near this many. */
+        const val MAX_FLIGHT_TRANSMISSIONS = 60
+
+        /** Below this, an aircraft over a centreline is landing rather than overflying. */
+        const val RUNWAY_MATCH_CEILING_FT = 4_000
+
+        const val MIN_QUERY_CHARS = 2
+        const val MIN_CALLSIGN_CHARS = 3
+
+        /** The spec's cap on any list that has to be read from a car. */
+        const val CAR_LIST_MAX = 6
         const val ANOMALY_NOTABLE = 0.55f
 
         /** Errors that mean "this mount is dead", as opposed to "your network is dead". */

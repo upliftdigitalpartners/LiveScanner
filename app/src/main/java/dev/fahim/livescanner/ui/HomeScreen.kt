@@ -100,6 +100,7 @@ fun HomeScreen(
                 .padding(horizontal = FdDim.gutter),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
+            FdKey("FLT", false, FdAccent.NEUTRAL, Modifier.weight(1f)) { vm.goTo(Screen.FLIGHT) }
             FdKey("HIST", false, FdAccent.NEUTRAL, Modifier.weight(1f)) { vm.goTo(Screen.HISTORY) }
             FdKey(
                 "ALRT",
