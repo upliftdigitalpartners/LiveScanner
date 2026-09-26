@@ -32,7 +32,6 @@ import dev.fahim.livescanner.data.airlineName
 import dev.fahim.livescanner.data.bearingPhrase
 import dev.fahim.livescanner.data.bearingTo
 import dev.fahim.livescanner.data.compassPoint
-import dev.fahim.livescanner.data.nearestGate
 import dev.fahim.livescanner.data.friendlyType
 import dev.fahim.livescanner.data.gateFromTranscript
 import dev.fahim.livescanner.data.matchRunway
@@ -143,7 +142,6 @@ data class FlightUiState(
     val runway: String? = null,
     val runwaySource: FactSource? = null,
     val gate: String? = null,
-    val gateSource: FactSource? = null,
     /** Transmissions addressed to this flight, newest first. */
     val transmissions: List<Transmission> = emptyList(),
     /** Live callsigns matching what has been typed so far. */
@@ -227,7 +225,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val secondaryRadio = container.secondaryRadio
     val coastline = container.coastline
     private val runways = container.runways
-    private val gates = container.gates
 
     /** Which feed COMM 2 is monitoring, or null when the second radio is off. */
     val comm2FeedId: StateFlow<String?> = secondaryRadio.feedId
@@ -528,7 +525,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             }
             val bearing = field?.let { bearingTo(it.lat, it.lon, match) }
             val observed = observedRunway(match, feed?.displayCode)
-            val stand = parkedGate(match, feed?.displayCode)
             state.copy(
                 aircraft = match,
                 bearing = bearing,
@@ -538,10 +534,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 // have changed, or been for a different flight, and the track cannot be wrong.
                 runway = observed ?: state.runway,
                 runwaySource = if (observed != null) FactSource.ADSB else state.runwaySource,
-                // Same order for the gate. Ground control says where it is going; where it
-                // actually stopped is where it actually is.
-                gate = stand ?: state.gate,
-                gateSource = if (stand != null) FactSource.ADSB else state.gateSource,
             )
         }
     }
@@ -556,18 +548,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private fun observedRunway(ac: Aircraft, icao: String?): String? {
         if (!ac.onGround && (ac.altitudeFt ?: Int.MAX_VALUE) > RUNWAY_MATCH_CEILING_FT) return null
         return matchRunway(runways.endsFor(icao), ac.lat, ac.lon, ac.trackDeg)?.ident
-    }
-
-    /**
-     * The stand an aircraft has parked on, or null.
-     *
-     * Only for something stopped: taxiing past a row of gates puts an aircraft within metres of
-     * several it is not going to, and reporting those in turn would be worse than saying nothing.
-     * Returns null whenever gate data hasn't been built — see tools/build_gates.py.
-     */
-    private fun parkedGate(ac: Aircraft, icao: String?): String? {
-        if (!ac.onGround || ac.groundSpeedKt >= PARKED_SPEED_KT) return null
-        return nearestGate(gates.gatesFor(icao), ac.lat, ac.lon)?.ref
     }
 
     /** Files a transmission under the followed flight when it is addressed to it. */
@@ -599,12 +579,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     heardRunway != null -> FactSource.RADIO
                     else -> state.runwaySource
                 },
-                gate = if (state.gateSource == FactSource.ADSB) state.gate else heardGate ?: state.gate,
-                gateSource = when {
-                    state.gateSource == FactSource.ADSB -> FactSource.ADSB
-                    heardGate != null -> FactSource.RADIO
-                    else -> state.gateSource
-                },
+                gate = heardGate ?: state.gate,
             )
         }
     }
@@ -1221,9 +1196,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
         /** Below this, an aircraft over a centreline is landing rather than overflying. */
         const val RUNWAY_MATCH_CEILING_FT = 4_000
-
-        /** Below this ground speed an aircraft is stopped on a stand, not taxiing past one. */
-        const val PARKED_SPEED_KT = 5.0
 
         const val MIN_QUERY_CHARS = 2
         const val MIN_CALLSIGN_CHARS = 3
