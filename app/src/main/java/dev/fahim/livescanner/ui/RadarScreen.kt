@@ -59,6 +59,7 @@ import dev.fahim.livescanner.data.LatLng
 import dev.fahim.livescanner.data.PhotoClient
 import dev.fahim.livescanner.data.RegistryClient
 import dev.fahim.livescanner.data.friendlyType
+import dev.fahim.livescanner.data.radioIdentOf
 import dev.fahim.livescanner.ui.theme.B612Mono
 import dev.fahim.livescanner.ui.theme.FdDim
 import dev.fahim.livescanner.ui.theme.FdTracking
@@ -171,7 +172,11 @@ fun RadarScreen(vm: MainViewModel, onBack: () -> Unit) {
 
         radar.selectedHex?.let { hex ->
             radar.aircraft.firstOrNull { it.hex == hex }?.let { ac ->
-                SelectedBlock(ac) { vm.selectAircraft(null) }
+                SelectedBlock(
+                    ac = ac,
+                    onFollow = { vm.followContact(ac.hex) },
+                    onClose = { vm.selectAircraft(null) },
+                )
             }
         }
 
@@ -678,7 +683,7 @@ private fun targetColor(ac: Aircraft): Color =
     if (ac.category == "A7") Color(0xFFFFB300) else altitudeRamp(ac.altitudeFt)
 
 @Composable
-private fun SelectedBlock(ac: Aircraft, onClose: () -> Unit) {
+private fun SelectedBlock(ac: Aircraft, onFollow: () -> Unit, onClose: () -> Unit) {
     val p = FlightDeck
     var photo by remember(ac.hex) { mutableStateOf<PhotoClient.Photo?>(null) }
     var registry by remember(ac.hex) { mutableStateOf<RegistryClient.Registration?>(null) }
@@ -756,6 +761,12 @@ private fun SelectedBlock(ac: Aircraft, onClose: () -> Unit) {
                     )
                 }
             }
+        }
+        // Same question the follow itself asks, so the key can never appear on a contact the
+        // follow would then turn down.
+        if (radioIdentOf(ac) != null) {
+            FdChip(label = "FOLLOW", accent = FdAccent.CYAN, onClick = onFollow)
+            Spacer(Modifier.width(4.dp))
         }
         androidx.compose.material3.Text(
             "✕",

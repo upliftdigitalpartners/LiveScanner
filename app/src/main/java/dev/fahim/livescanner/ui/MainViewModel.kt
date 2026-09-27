@@ -40,6 +40,7 @@ import dev.fahim.livescanner.data.instructionsFrom
 import dev.fahim.livescanner.data.matchRunway
 import dev.fahim.livescanner.data.normalizeFlightNumber
 import dev.fahim.livescanner.data.phaseOf
+import dev.fahim.livescanner.data.radioIdentOf
 import dev.fahim.livescanner.data.runwayFromTranscript
 import dev.fahim.livescanner.data.transcriptMentionsCallsign
 import dev.fahim.livescanner.data.validRunway
@@ -518,6 +519,31 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         past.forEach(::applyHeardFacts)
         refreshFlight(_radar.value.aircraft)
         publishTracked()
+    }
+
+    /**
+     * Follows the aircraft behind a contact on the scope, and opens the flight panel on it.
+     *
+     * Typing a flight number assumes you already know it. The way you actually find one worth
+     * following is seeing it on the radar, so this is the path that matters — it resolves the
+     * contact to whatever it can be called by and hands that to [followFlight].
+     */
+    fun followContact(hex: String) {
+        val ac = _radar.value.aircraft.firstOrNull { it.hex == hex } ?: return
+        val ident = radioIdentOf(ac) ?: run {
+            _flight.update { it.copy(error = "That contact isn't reporting a callsign") }
+            _screen.value = Screen.FLIGHT
+            return
+        }
+        followFlight(ident)
+        _screen.value = Screen.FLIGHT
+    }
+
+    /** Opens the scope with the followed flight selected, if it is currently in contact. */
+    fun showFollowedOnScope() {
+        val hex = _flight.value.aircraft?.hex
+        _radar.update { it.copy(selectedHex = hex, centerOffsetNm = Offset.Zero) }
+        _screen.value = Screen.RADAR
     }
 
     fun clearFlight() {

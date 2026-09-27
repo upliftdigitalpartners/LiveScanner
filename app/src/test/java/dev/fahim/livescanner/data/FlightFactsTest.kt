@@ -146,4 +146,33 @@ class FlightFactsTest {
         val overhead = bearingTo(35.214, -80.9431, aircraft(lat = 35.2145, lon = -80.9432))
         assertEquals("overhead", bearingPhrase(overhead))
     }
+
+    // ── What the radio would call a contact ──────────────────────────────────────────────────
+
+    @Test
+    fun `a callsign is what the radio uses`() {
+        assertEquals("DAL450", radioIdentOf(aircraft()))
+    }
+
+    @Test
+    fun `without a callsign the registration stands in`() {
+        val ga = aircraft().copy(callsign = null)
+        assertEquals("N123DL", radioIdentOf(ga))
+    }
+
+    @Test
+    fun `blank and whitespace callsigns fall through rather than being followed`() {
+        // ADS-B pads callsigns, so a contact with no flight ID arrives as spaces, not null.
+        assertEquals("N123DL", radioIdentOf(aircraft().copy(callsign = "   ")))
+        assertEquals("DAL450", radioIdentOf(aircraft().copy(callsign = " dal450 ")))
+    }
+
+    @Test
+    fun `a contact with no name at all cannot be followed`() {
+        // Nothing for a controller to have said means nothing to match chatter against, which is
+        // what stops the scope offering a FOLLOW key that would open an empty panel.
+        val anonymous = aircraft().copy(callsign = null, registration = null)
+        assertNull(radioIdentOf(anonymous))
+        assertNull(radioIdentOf(aircraft().copy(callsign = "  ", registration = "")))
+    }
 }

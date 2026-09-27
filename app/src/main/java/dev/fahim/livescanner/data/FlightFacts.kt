@@ -59,6 +59,18 @@ fun gateFromTranscript(transcript: String): String? {
     return (letter + number.trimStart('0').ifEmpty { "0" }).ifBlank { null }
 }
 
+/**
+ * What the radio would call this contact, or null if nothing would.
+ *
+ * A flight is followed by matching transmissions against a name, so a contact broadcasting
+ * neither a callsign nor a registration cannot be followed at all — there is nothing for a
+ * controller to have said. Both the scope's FOLLOW key and the view model ask this, so the key
+ * cannot appear on a contact the follow would then refuse.
+ */
+fun radioIdentOf(ac: Aircraft): String? =
+    ac.callsign?.trim()?.uppercase()?.takeIf { it.isNotEmpty() }
+        ?: ac.registration?.trim()?.uppercase()?.takeIf { it.isNotEmpty() }
+
 /** Where a flight is in its arrival or departure, as far as the transponder can tell. */
 enum class FlightPhase(val label: String) {
     PARKED("AT GATE"),

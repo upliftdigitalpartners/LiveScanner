@@ -72,6 +72,12 @@ fun FlightScreen(vm: MainViewModel, onBack: () -> Unit) {
             onBack = onBack,
         ) {
             if (flight.following) {
+                // Only offered when there is a contact to centre on; the flight panel works
+                // without ADS-B, but the scope has nothing to show for a flight it cannot see.
+                if (flight.aircraft != null) {
+                    FdChip(label = "SCOPE", accent = FdAccent.CYAN, onClick = vm::showFollowedOnScope)
+                    Spacer(Modifier.width(6.dp))
+                }
                 FdChip(label = "CLEAR", accent = FdAccent.RED, onClick = vm::clearFlight)
             }
         }
