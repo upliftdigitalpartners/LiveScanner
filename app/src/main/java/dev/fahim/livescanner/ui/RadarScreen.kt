@@ -36,11 +36,13 @@ import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
@@ -51,6 +53,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.graphics.painter.Painter
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
@@ -59,6 +63,7 @@ import dev.fahim.livescanner.data.LatLng
 import dev.fahim.livescanner.data.PhotoClient
 import dev.fahim.livescanner.data.RegistryClient
 import dev.fahim.livescanner.data.friendlyType
+import dev.fahim.livescanner.R
 import dev.fahim.livescanner.data.radioIdentOf
 import dev.fahim.livescanner.ui.theme.B612Mono
 import dev.fahim.livescanner.ui.theme.FdDim
@@ -142,6 +147,7 @@ fun RadarScreen(vm: MainViewModel, onBack: () -> Unit) {
             // The pass covers the scope only. Running it over the whole screen would put
             // scanlines through the readouts and soften text that has to be read at a glance.
             val crt = scopeCrtEffect(enabled = radar.crtOn, night = p.night)
+            val targetIcons = rememberTargetIcons()
             Box(Modifier.weight(1f).fillMaxWidth()) {
                 Box(Modifier.matchParentSize().then(crt)) {
                     Scope(
@@ -150,6 +156,7 @@ fun RadarScreen(vm: MainViewModel, onBack: () -> Unit) {
                         shoreline = shoreline,
                         weather = weather,
                         playing = playback.isPlaying,
+                        icons = targetIcons,
                         onSelect = vm::selectAircraft,
                         onTrack = vm::trackAircraft,
                         onZoom = vm::zoomRange,
@@ -303,6 +310,7 @@ private fun Scope(
     shoreline: List<List<LatLng>>,
     weather: List<WeatherTile>,
     playing: Boolean,
+    icons: Map<String, Painter>,
     onSelect: (String?) -> Unit,
     onTrack: (String) -> Unit,
     onZoom: (Float) -> Unit,
@@ -612,13 +620,31 @@ private fun Scope(
             }
 
             val half = 12.dp.toPx() / 2f
-            diamond.rewind()
-            diamond.moveTo(pos.x, pos.y - half)
-            diamond.lineTo(pos.x + half, pos.y)
-            diamond.lineTo(pos.x, pos.y + half)
-            diamond.lineTo(pos.x - half, pos.y)
-            diamond.close()
-            drawPath(diamond, color = tint)
+            val icon = icons[ac.category]
+            if (icon == null) {
+                // No silhouette for this category: the diamond the scope has always drawn.
+                diamond.rewind()
+                diamond.moveTo(pos.x, pos.y - half)
+                diamond.lineTo(pos.x + half, pos.y)
+                diamond.lineTo(pos.x, pos.y + half)
+                diamond.lineTo(pos.x - half, pos.y)
+                diamond.close()
+                drawPath(diamond, color = tint)
+            } else {
+                // Silhouettes are drawn nose-up, so the rotation is the aircraft's own track plus
+                // whatever the whole picture is rotated by in track-up mode.
+                val span = half * 2.6f * iconScaleFor(ac.category)
+                translate(left = pos.x - span / 2f, top = pos.y - span / 2f) {
+                    rotate(
+                        degrees = (ac.trackDeg + rotation).toFloat(),
+                        pivot = Offset(span / 2f, span / 2f),
+                    ) {
+                        with(icon) {
+                            draw(Size(span, span), colorFilter = ColorFilter.tint(tint))
+                        }
+                    }
+                }
+            }
 
             val callsign = ac.callsign?.trim()
             val label = labels[ac.hex]
@@ -688,6 +714,43 @@ private fun Scope(
 }
 
 /** Diamonds take the altitude ramp; helicopters are always amber. */
+/**
+ * Silhouettes for the scope, keyed by ADS-B emitter category.
+ *
+ * Colour on this scope already means altitude, so shape is what is left to carry type — a heavy
+ * and a light aircraft stop being the same diamond. Categories the transponder doesn't send, or
+ * sends as something unexpected, fall back to the narrowbody: it is both the commonest target at
+ * a hub field and the least wrong thing to show when the type isn't known.
+ */
+@Composable
+private fun rememberTargetIcons(): Map<String, Painter> {
+    val light = painterResource(R.drawable.ic_ac_light)
+    val regional = painterResource(R.drawable.ic_ac_regional)
+    val narrowbody = painterResource(R.drawable.ic_ac_narrowbody)
+    val widebody = painterResource(R.drawable.ic_ac_widebody)
+    val rotorcraft = painterResource(R.drawable.ic_ac_rotorcraft)
+    return remember(light, regional, narrowbody, widebody, rotorcraft) {
+        mapOf(
+            "A1" to light,
+            "A2" to regional,
+            "A3" to narrowbody,
+            "A4" to narrowbody,   // high-vortex large: a 757, still a narrowbody shape
+            "A5" to widebody,
+            "A6" to narrowbody,   // high performance; nothing better to show it as
+            "A7" to rotorcraft,
+        )
+    }
+}
+
+/** Relative size per category, so a heavy reads bigger than a light without new artwork. */
+private fun iconScaleFor(category: String?): Float = when (category) {
+    "A1" -> 0.82f
+    "A2" -> 0.92f
+    "A5" -> 1.22f
+    "A7" -> 1.0f
+    else -> 1.0f
+}
+
 private fun targetColor(ac: Aircraft): Color =
     if (ac.category == "A7") Color(0xFFFFB300) else altitudeRamp(ac.altitudeFt)
 
