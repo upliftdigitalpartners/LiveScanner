@@ -119,6 +119,10 @@ fun RadarScreen(vm: MainViewModel, onBack: () -> Unit) {
                     FdKey("EN", radar.plainEnglishOn, FdAccent.MAGENTA) { vm.togglePlainEnglish() }
                     FdKey("FLW", radar.followOn, FdAccent.GREEN) { vm.toggleFollow() }
                     FdKey("WX", radar.weatherOn, FdAccent.CYAN) { vm.toggleWeather() }
+                    // Hidden rather than disabled below Android 13: a dead key invites tapping.
+                    if (crtSupported) {
+                        FdKey("CRT", radar.crtOn, FdAccent.AMBER) { vm.toggleCrt() }
+                    }
                 }
             },
         )
@@ -135,18 +139,23 @@ fun RadarScreen(vm: MainViewModel, onBack: () -> Unit) {
             // Loaded once per airport and cached by the loader; inland fields simply get none.
             val shoreline = remember(icao) { vm.coastline.forAirport(icao) }
             val weather = rememberWeatherTiles(origin, radar.rangeNm, radar.weatherOn)
+            // The pass covers the scope only. Running it over the whole screen would put
+            // scanlines through the readouts and soften text that has to be read at a glance.
+            val crt = scopeCrtEffect(enabled = radar.crtOn, night = p.night)
             Box(Modifier.weight(1f).fillMaxWidth()) {
-                Scope(
-                    origin = origin,
-                    radar = radar,
-                    shoreline = shoreline,
-                    weather = weather,
-                    playing = playback.isPlaying,
-                    onSelect = vm::selectAircraft,
-                    onTrack = vm::trackAircraft,
-                    onZoom = vm::zoomRange,
-                    onPan = vm::panScope,
-                )
+                Box(Modifier.matchParentSize().then(crt)) {
+                    Scope(
+                        origin = origin,
+                        radar = radar,
+                        shoreline = shoreline,
+                        weather = weather,
+                        playing = playback.isPlaying,
+                        onSelect = vm::selectAircraft,
+                        onTrack = vm::trackAircraft,
+                        onZoom = vm::zoomRange,
+                        onPan = vm::panScope,
+                    )
+                }
                 CornerReadouts(
                     approachBearing = radar.approachBearing,
                     polling = playback.isPlaying,

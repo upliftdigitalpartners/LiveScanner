@@ -95,6 +95,8 @@ data class RadarUiState(
     val followOn: Boolean = true,
     /** WX — precipitation radar drawn beneath the traffic. */
     val weatherOn: Boolean = false,
+    /** CRT — the phosphor/scanline shader pass over the scope. */
+    val crtOn: Boolean = true,
     val caption: String? = null,
     /** Callsigns in the transmission currently being decoded — magenta ring on the scope. */
     val transcribing: Set<String> = emptySet(),
@@ -260,6 +262,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             plainEnglishOn = prefs.plainEnglishOn,
             followOn = prefs.followOn,
             weatherOn = prefs.weatherOn,
+            crtOn = prefs.crtOn,
         ),
     )
     val radar: StateFlow<RadarUiState> = _radar.asStateFlow()
@@ -709,6 +712,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val next = !_radar.value.plainEnglishOn
         prefs.plainEnglishOn = next
         _radar.update { it.copy(plainEnglishOn = next) }
+    }
+
+    fun toggleCrt() {
+        val next = !_radar.value.crtOn
+        prefs.crtOn = next
+        _radar.update { it.copy(crtOn = next) }
     }
 
     fun toggleWeather() {

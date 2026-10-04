@@ -74,6 +74,11 @@ class UserPrefs(context: Context) {
         get() = prefs.getBoolean(KEY_WX, false)
         set(value) = prefs.edit().putBoolean(KEY_WX, value).apply()
 
+    /** CRT — the phosphor/scanline shader pass over the scope. */
+    var crtOn: Boolean
+        get() = prefs.getBoolean(KEY_CRT, true)
+        set(value) = prefs.edit().putBoolean(KEY_CRT, value).apply()
+
     /** FLW — spotlight the aircraft currently being talked to. */
     var followOn: Boolean
         get() = prefs.getBoolean(KEY_FLW, true)
@@ -132,6 +137,7 @@ class UserPrefs(context: Context) {
         const val KEY_EN = "en_on"
         const val KEY_FLW = "flw_on"
         const val KEY_WX = "wx_on"
+        const val KEY_CRT = "crt_on"
         const val KEY_GAIN = "gain"
         const val KEY_SQUELCH = "squelch"
         const val KEY_EQ = "eq_preset"
