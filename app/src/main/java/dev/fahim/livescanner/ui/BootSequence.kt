@@ -17,6 +17,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -65,6 +66,9 @@ private const val WORDMARK_FADE_MS = 340f
 private const val SUBTITLE_LAG_MS = 140f
 private const val FADE_OUT_MS = 250f
 private const val TOTAL_MS = 2_200L
+
+/** How long the clip takes to replace the drawn rings and sweep, once it has pixels. */
+private const val VIDEO_FADE_MS = 260f
 
 private val CHECK_BLOCK_WIDTH = 236.dp
 
@@ -122,6 +126,10 @@ fun BootSequence(onFinished: () -> Unit) {
         )
     }
 
+    // When the clip starts rendering, the drawn rings and sweep hand over to it. Until then —
+    // and for good, if it never renders — they are what the boot screen is.
+    var videoAtMs by remember { mutableLongStateOf(-1L) }
+
     Box(
         Modifier
             .fillMaxSize()
@@ -129,8 +137,20 @@ fun BootSequence(onFinished: () -> Unit) {
             .background(p.bg)
             .pointerInput(Unit) { detectTapGestures { finish() } },
     ) {
+        BootVideo(
+            onFirstFrame = { if (videoAtMs < 0) videoAtMs = elapsedMs },
+            modifier = Modifier
+                .fillMaxSize()
+                .graphicsLayer {
+                    alpha = if (videoAtMs < 0) 0f else ramp(elapsedMs - videoAtMs, 0f, VIDEO_FADE_MS)
+                },
+        )
+
         Canvas(Modifier.fillMaxSize()) {
             val ms = elapsedMs
+            // Crossfade: whatever the video has faded in, the drawing gives up.
+            val drawn = if (videoAtMs < 0) 1f else 1f - ramp(ms - videoAtMs, 0f, VIDEO_FADE_MS)
+            if (drawn <= 0f) return@Canvas
             val centre = Offset(size.width / 2f, size.height / 2f)
             val scopeR = min(size.width, size.height) / 2f * 0.62f
             val hairline = 1.dp.toPx()
@@ -146,7 +166,7 @@ fun BootSequence(onFinished: () -> Unit) {
                 if (progress <= 0f) continue
                 val r = scopeR * ring / 4f
                 drawArc(
-                    color = p.cyan.copy(alpha = 0.10f + 0.04f * ring),
+                    color = p.cyan.copy(alpha = (0.10f + 0.04f * ring) * drawn),
                     startAngle = -90f,
                     sweepAngle = 360f * progress,
                     useCenter = false,
@@ -160,7 +180,7 @@ fun BootSequence(onFinished: () -> Unit) {
             val sweep = ramp(ms, SWEEP_START_MS, SWEEP_DURATION_MS)
             if (sweep > 0f && sweep < 1f) {
                 rotate(degrees = -90f + 360f * sweep, pivot = centre) {
-                    drawCircle(brush = sweepBrush, radius = scopeR, center = centre)
+                    drawCircle(brush = sweepBrush, radius = scopeR, center = centre, alpha = drawn)
                 }
             }
         }
