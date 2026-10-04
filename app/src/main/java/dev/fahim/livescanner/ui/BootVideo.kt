@@ -1,5 +1,6 @@
 package dev.fahim.livescanner.ui
 
+import android.content.ContentResolver
 import android.view.SurfaceView
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -11,7 +12,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
-import androidx.media3.datasource.RawResourceDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import dev.fahim.livescanner.R
 
@@ -35,7 +35,14 @@ fun BootVideo(onFirstFrame: () -> Unit, modifier: Modifier = Modifier) {
 
     val player = remember {
         ExoPlayer.Builder(context).build().apply {
-            setMediaItem(MediaItem.fromUri(RawResourceDataSource.buildRawResourceUri(R.raw.boot_scope).toString()))
+            // The plain android.resource:// form rather than Media3's helper, which is
+            // deprecated. Built from the running package name, not a literal, because the debug
+            // build carries an applicationIdSuffix and a hardcoded id would miss it.
+            setMediaItem(
+                MediaItem.fromUri(
+                    "${ContentResolver.SCHEME_ANDROID_RESOURCE}://${context.packageName}/${R.raw.boot_scope}",
+                ),
+            )
             repeatMode = Player.REPEAT_MODE_OFF
             volume = 0f
             prepare()
