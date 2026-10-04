@@ -230,4 +230,45 @@ class AudioBufferTest {
         assertTrue("ring files must stay in the directory", strays.isNotEmpty())
         assertTrue(strays.none { it.contains("/") || it.contains("..") })
     }
+
+    // ── Reading a span of wall-clock time ────────────────────────────────────────────────────
+
+    @Test
+    fun `between returns the bytes written across a time range`() {
+        val buffer = buffer(capacity = 10_000L)
+        buffer.switchTo("feed")
+        // indexIntervalMs is 0, so every write stamps the index with its own instant.
+        buffer.write(bytes(1, 100), 0, 100)
+        val afterFirst = System.currentTimeMillis()
+        Thread.sleep(8)
+        buffer.write(bytes(2, 100), 0, 100)
+        Thread.sleep(8)
+        val end = System.currentTimeMillis()
+        buffer.write(bytes(3, 100), 0, 100)
+
+        val span = buffer.between(afterFirst, end)
+        assertNotNull(span)
+        // The window has to start at or after the first write and cannot run past what exists.
+        assertTrue(span!!.offset >= 0L)
+        assertTrue(span.bytes.isNotEmpty())
+        assertTrue(span.offset + span.bytes.size <= buffer.totalWritten)
+    }
+
+    @Test
+    fun `between refuses a range that runs backwards`() {
+        val buffer = buffer(capacity = 10_000L)
+        buffer.switchTo("feed")
+        buffer.write(bytes(1, 200), 0, 200)
+        val now = System.currentTimeMillis()
+        assertNull(buffer.between(now, now - 5_000))
+    }
+
+    @Test
+    fun `between on an empty buffer is null rather than a crash`() {
+        val buffer = buffer()
+        val now = System.currentTimeMillis()
+        assertNull(buffer.between(now - 1_000, now))
+        buffer.switchTo("feed")
+        assertNull(buffer.between(now - 1_000, now))
+    }
 }

@@ -45,9 +45,15 @@ import dev.fahim.livescanner.data.runwayFromTranscript
 import dev.fahim.livescanner.data.transcriptMentionsCallsign
 import dev.fahim.livescanner.data.validRunway
 import dev.fahim.livescanner.data.priorityFor
+import dev.fahim.livescanner.playback.AudioBuffer
 import dev.fahim.livescanner.playback.EqPreset
+import dev.fahim.livescanner.playback.SpeechSegmenter
+import dev.fahim.livescanner.playback.SpeechSpan
 import dev.fahim.livescanner.playback.ScannerPlaybackService
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -829,97 +835,138 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * Pulls the newest few seconds out of the rolling buffer, transcribes it, and turns each
-     * result into a recorder entry — captions, alert matching and follow all hang off this.
+     * Transcribes one transmission at a time, following the squelch gate.
+     *
+     * This used to cut the stream into fixed eight-second windows on a timer, which split roughly
+     * every transmission that didn't happen to fit inside one — and a clearance cut in half is two
+     * partial transcripts that each miss words, with nothing downstream able to recover the seam.
+     * The gate already knows where the speech is, so [SpeechSegmenter] reads it and this waits for
+     * whole transmissions.
      */
-    private suspend fun transcribeLoop(apiKey: String) {
+    private suspend fun transcribeLoop(apiKey: String) = coroutineScope {
         _radar.update { it.copy(caption = "Listening…") }
-        while (true) {
-            val segment = audioBuffer.latest(SEGMENT_MS)
-            if (segment == null || segment.bytes.size < MIN_CLIP_BYTES) {
-                delay(SEGMENT_MS)
-                continue
-            }
-            val feed = _playback.value.feed
-            // Whisper is primed with the tuned airport's own runway and fix names, which is the
-            // difference between "cleared to SCUPP" and a line of nonsense.
-            val detailed = GroqTranscriber.transcribeDetailed(
-                segment.bytes,
-                apiKey,
-                airportIcao = feed?.displayCode,
-            )
-            if (detailed == null || detailed.text.isBlank()) {
-                delay(500)
-                continue
-            }
-            val text = detailed.text.trim()
 
-            val plain = if (_radar.value.plainEnglishOn) {
-                GroqTranscriber.plainEnglish(text, apiKey)
-            } else {
-                null
-            }
-            val bps = audioBuffer.bytesPerSecond()
-            val callsigns = GroqTranscriber.identifyCallsigns(
-                text,
-                _radar.value.aircraft.mapNotNull { it.callsign }.distinct(),
-                apiKey,
-            )
-            // Keyword rules only catch what you thought to ask for; the anomaly pass is what
-            // surfaces the interesting transmission you had no rule for.
-            val keywordPriority = priorityFor(text)
-            val anomaly = if (keywordPriority == Priority.ROUTINE) {
-                GroqTranscriber.anomalyScore(text, apiKey)
-            } else {
-                null
-            }
-            val priority = when {
-                keywordPriority != Priority.ROUTINE -> keywordPriority
-                (anomaly?.score ?: 0f) >= ANOMALY_NOTABLE -> Priority.NOTABLE
-                else -> Priority.ROUTINE
-            }
+        // Bounded, and the oldest goes first: if transcription falls behind a busy frequency, the
+        // transmissions worth having are the recent ones.
+        val clips = Channel<AudioBuffer.Segment>(
+            capacity = CLIP_QUEUE,
+            onBufferOverflow = BufferOverflow.DROP_OLDEST,
+        )
 
-            val entry = Transmission(
-                id = UUID.randomUUID().toString(),
-                timestampMs = System.currentTimeMillis(),
-                feedId = feed?.id.orEmpty(),
-                feedLabel = feed?.let { "${it.displayCode} ${shortFacility(it.name)}" } ?: "—",
-                durationMs = ((segment.bytes.size / bps) * 1000).toLong(),
-                raw = text,
-                plainEnglish = plain ?: anomaly?.takeIf { it.score >= ANOMALY_NOTABLE }?.reason,
-                callsign = callsigns.firstOrNull(),
-                priority = priority,
-                bufferOffset = segment.offset,
-                bufferLength = segment.bytes.size,
-                waveform = waveformOf(segment.bytes),
-                words = detailed.words.map { TranscriptWord(it.text, it.startMs, it.endMs) },
-            )
-
-            _history.update { it.copy(transmissions = (listOf(entry) + it.transmissions).take(MAX_HISTORY)) }
-            noteFlightTransmission(entry)
-
-            val display = plain ?: text
-            val hits = callsigns.map { it.trim().uppercase() }.toSet()
-            val spokenTo = _radar.value.aircraft
-                .firstOrNull { it.callsign?.trim()?.uppercase() in hits }?.hex
-            _radar.update { state ->
-                state.copy(
-                    caption = display,
-                    transcribing = hits,
-                    selectedHex = if (state.followOn && spokenTo != null) spokenTo else state.selectedHex,
-                )
+        // Watching the gate has to stay responsive and must not do the transcribing itself.
+        // gateOpen is a StateFlow, so it conflates: suspending here on a network round trip would
+        // silently drop every transition that happened while it was in flight — which on a busy
+        // field is most of them. Reading the clip out of the ring is only a buffer read, and it
+        // has to happen now rather than when the queue drains, or the audio has aged out by then.
+        launch {
+            val segmenter = SpeechSegmenter()
+            dsp.gateOpen.collect { open ->
+                val span = segmenter.onGate(System.currentTimeMillis(), open) ?: return@collect
+                val segment = clipFor(span) ?: return@collect
+                if (segment.bytes.size >= MIN_CLIP_BYTES) clips.trySend(segment)
             }
-            // Ripple out from whoever was just addressed, so the sound has a place on the scope.
-            spokenTo?.let { hex ->
-                viewModelScope.launch {
-                    _radar.update { it.copy(rippleHex = hex) }
-                    delay(RIPPLE_MS)
-                    _radar.update { if (it.rippleHex == hex) it.copy(rippleHex = null) else it }
-                }
-            }
-
-            matchAlerts(entry)
         }
+
+        for (clip in clips) {
+            transcribeSegment(clip, apiKey)
+        }
+    }
+
+    /**
+     * The bytes behind a span of speech.
+     *
+     * The gate fires when audio *plays*; the buffer is indexed by when bytes *arrived*. Those are
+     * the same clock but not the same instant — the player runs behind the download by however
+     * much it has buffered ahead — so the span is shifted back by that much before the buffer is
+     * asked. The lead and tail the segmenter adds absorb the error in that estimate.
+     *
+     * Falling back to the most recent audio of the same length matters more than it looks: if the
+     * correction were ever wrong enough that the index could not cover the span, transcription
+     * would otherwise go quiet with nothing to show why.
+     */
+    private fun clipFor(span: SpeechSpan): AudioBuffer.Segment? {
+        val bufferedAheadMs = controller?.totalBufferedDuration ?: 0L
+        val exact = audioBuffer.between(span.startMs - bufferedAheadMs, span.endMs - bufferedAheadMs)
+        return exact ?: audioBuffer.latest(span.durationMs)
+    }
+
+    private suspend fun transcribeSegment(segment: AudioBuffer.Segment, apiKey: String) {
+        val feed = _playback.value.feed
+        // Whisper is primed with the tuned airport's own runway and fix names, which is the
+        // difference between "cleared to SCUPP" and a line of nonsense.
+        val detailed = GroqTranscriber.transcribeDetailed(
+            segment.bytes,
+            apiKey,
+            airportIcao = feed?.displayCode,
+        )
+        if (detailed == null || detailed.text.isBlank()) return
+        val text = detailed.text.trim()
+
+        val plain = if (_radar.value.plainEnglishOn) {
+            GroqTranscriber.plainEnglish(text, apiKey)
+        } else {
+            null
+        }
+        val bps = audioBuffer.bytesPerSecond()
+        val callsigns = GroqTranscriber.identifyCallsigns(
+            text,
+            _radar.value.aircraft.mapNotNull { it.callsign }.distinct(),
+            apiKey,
+        )
+        // Keyword rules only catch what you thought to ask for; the anomaly pass is what
+        // surfaces the interesting transmission you had no rule for.
+        val keywordPriority = priorityFor(text)
+        val anomaly = if (keywordPriority == Priority.ROUTINE) {
+            GroqTranscriber.anomalyScore(text, apiKey)
+        } else {
+            null
+        }
+        val priority = when {
+            keywordPriority != Priority.ROUTINE -> keywordPriority
+            (anomaly?.score ?: 0f) >= ANOMALY_NOTABLE -> Priority.NOTABLE
+            else -> Priority.ROUTINE
+        }
+
+        val entry = Transmission(
+            id = UUID.randomUUID().toString(),
+            timestampMs = System.currentTimeMillis(),
+            feedId = feed?.id.orEmpty(),
+            feedLabel = feed?.let { "${it.displayCode} ${shortFacility(it.name)}" } ?: "—",
+            durationMs = ((segment.bytes.size / bps) * 1000).toLong(),
+            raw = text,
+            plainEnglish = plain ?: anomaly?.takeIf { it.score >= ANOMALY_NOTABLE }?.reason,
+            callsign = callsigns.firstOrNull(),
+            priority = priority,
+            bufferOffset = segment.offset,
+            bufferLength = segment.bytes.size,
+            waveform = waveformOf(segment.bytes),
+            words = detailed.words.map { TranscriptWord(it.text, it.startMs, it.endMs) },
+        )
+
+        _history.update { it.copy(transmissions = (listOf(entry) + it.transmissions).take(MAX_HISTORY)) }
+        noteFlightTransmission(entry)
+
+        val display = plain ?: text
+        val hits = callsigns.map { it.trim().uppercase() }.toSet()
+        val spokenTo = _radar.value.aircraft
+            .firstOrNull { it.callsign?.trim()?.uppercase() in hits }?.hex
+        _radar.update { state ->
+            state.copy(
+                caption = display,
+                transcribing = hits,
+                selectedHex = if (state.followOn && spokenTo != null) spokenTo else state.selectedHex,
+            )
+        }
+        // Ripple out from whoever was just addressed, so the sound has a place on the scope.
+        spokenTo?.let { hex ->
+            viewModelScope.launch {
+                _radar.update { it.copy(rippleHex = hex) }
+                delay(RIPPLE_MS)
+                _radar.update { if (it.rippleHex == hex) it.copy(rippleHex = null) else it }
+            }
+        }
+
+        matchAlerts(entry)
     }
 
     // ── Alerts ───────────────────────────────────────────────────────────────────────────────
@@ -1249,10 +1296,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         const val REPLAY_TICK_MS = 80L
         const val SCRUB_SECONDS = 12
         const val ADSB_POLL_MS = 5_000L
-        const val SEGMENT_MS = 8_000L
         const val PING_MS = 3_300L
         const val ALERT_MS = 6_000L
         const val MIN_CLIP_BYTES = 800
+
+        /** Transmissions held while transcription catches up, before the oldest is dropped. */
+        const val CLIP_QUEUE = 8
         const val MAX_HISTORY = 200
 
         /** Transmissions kept for the followed flight; one arrival is nowhere near this many. */

@@ -175,6 +175,26 @@ class AudioBuffer(
         }
     }
 
+    /**
+     * The bytes written between two wall-clock instants, or null when the window no longer
+     * covers them.
+     *
+     * The index is stamped as bytes *arrive*, so the times passed in have to be arrival times
+     * too. A caller working from playback events has to subtract however far the player is
+     * buffered ahead before asking.
+     */
+    fun between(fromMs: Long, toMs: Long): Segment? {
+        synchronized(lock) {
+            if (raf == null) return null
+            val start = offsetAtTime(fromMs) ?: return null
+            val end = offsetAtTime(toMs) ?: return null
+            val length = (end - start).toInt()
+            if (length <= 0) return null
+            val bytes = read(start, length) ?: return null
+            return Segment(start, bytes)
+        }
+    }
+
     /** Bytes for a previously recorded span, for REPLAY and CLIP. Null once it has aged out. */
     fun segment(from: Long, length: Int): ByteArray? = read(from, length)
 
